@@ -1,0 +1,173 @@
+@import "tailwindcss";
+
+/* dark: 变体跟随应用内主题（data-theme），而非系统偏好 */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* ---- 主题令牌：utilities 映射到运行时 CSS 变量，支持亮暗切换 ---- */
+@theme inline {
+  --color-paper: var(--paper);
+  --color-card: var(--card);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-ink-faint: var(--ink-faint);
+  --color-line: var(--line);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --font-reading: "Noto Serif SC", "Source Han Serif SC", "SimSun", Georgia, serif;
+}
+
+:root {
+  --paper: #faf8f3;
+  --card: #ffffff;
+  --ink: #2c2a25;
+  --ink-soft: #6e685c;
+  --ink-faint: #a39c8d;
+  --line: #e6e1d5;
+  --accent: #7a5c2e;
+  --accent-soft: #f0e9db;
+}
+
+[data-theme="dark"] {
+  --paper: #201e1b;
+  --card: #2a2724;
+  --ink: #d9d3c7;
+  --ink-soft: #99927f;
+  --ink-faint: #6e6858;
+  --line: #3a362f;
+  --accent: #c9a86a;
+  --accent-soft: #3a332a;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- 正文排版（epub 章节内容） ---- */
+.chapter-content {
+  font-family: var(--font-reading);
+  overflow-wrap: break-word;
+}
+.chapter-content p,
+.chapter-content div[data-para] {
+  margin: 0.9em 0;
+  text-indent: 2em;
+}
+.chapter-content h1,
+.chapter-content h2,
+.chapter-content h3,
+.chapter-content h4 {
+  font-weight: 600;
+  margin: 1.6em 0 0.8em;
+  line-height: 1.4;
+  text-indent: 0;
+}
+.chapter-content h1 { font-size: 1.5em; }
+.chapter-content h2 { font-size: 1.3em; }
+.chapter-content h3 { font-size: 1.15em; }
+.chapter-content blockquote {
+  margin: 1em 0;
+  padding: 0.2em 1em;
+  border-left: 3px solid var(--line);
+  color: var(--ink-soft);
+}
+.chapter-content img,
+.chapter-content svg {
+  max-width: 100%;
+  height: auto;
+  margin: 1em auto;
+  display: block;
+}
+.chapter-content hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 2em auto;
+  width: 40%;
+}
+.chapter-content li { margin: 0.3em 0; }
+
+/* 注释/摘录高亮（CSS Custom Highlight API） */
+::highlight(anno) {
+  text-decoration: underline dotted 1.5px var(--accent);
+  text-underline-offset: 5px;
+}
+::highlight(anno-active) {
+  background-color: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+::highlight(excerpt) {
+  background-color: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* 注释角标 */
+.anno-marker {
+  cursor: pointer;
+  user-select: none;
+  display: inline-block;
+  text-indent: 0;
+}
+.anno-marker::after {
+  content: "✱";
+  font-size: 0.72em;
+  color: var(--accent);
+  vertical-align: super;
+  margin-left: 1px;
+}
+.anno-marker:hover::after {
+  color: var(--ink);
+}
+
+/* ---- 面板内 markdown 渲染 ---- */
+.md-body {
+  font-size: 0.875rem;
+  line-height: 1.75;
+  overflow-wrap: break-word;
+}
+.md-body > :first-child { margin-top: 0; }
+.md-body > :last-child { margin-bottom: 0; }
+.md-body p { margin: 0.5em 0; }
+.md-body h1, .md-body h2, .md-body h3, .md-body h4 {
+  font-weight: 600;
+  margin: 0.9em 0 0.4em;
+  font-size: 0.95em;
+  color: var(--ink);
+}
+.md-body ul, .md-body ol { padding-left: 1.4em; margin: 0.4em 0; }
+.md-body ul { list-style: disc; }
+.md-body ol { list-style: decimal; }
+.md-body li { margin: 0.2em 0; }
+.md-body blockquote {
+  border-left: 2px solid var(--accent);
+  padding-left: 0.8em;
+  margin: 0.5em 0;
+  color: var(--ink-soft);
+}
+.md-body code {
+  background: var(--accent-soft);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  font-size: 0.85em;
+}
+.md-body strong { font-weight: 600; }
+.md-body hr { border: none; border-top: 1px solid var(--line); margin: 0.8em 0; }
+
+/* 流式输出光标 */
+.stream-cursor::after {
+  content: "▌";
+  color: var(--accent);
+  animation: blink 1s steps(2) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+/* 细滚动条 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
