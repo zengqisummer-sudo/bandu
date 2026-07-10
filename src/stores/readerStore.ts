@@ -399,7 +399,19 @@ export const useReaderStore = create<ReaderState>((set, get) => {
           set({ hintsProgress: acc.length });
         }
         const hints = parseHintsOutput(acc, { spine, file: chapter.href });
-        if (hints.length === 0) throw new Error("模型输出无法解析为注释列表，请重试");
+        if (hints.length === 0) {
+          // 落地原始输出便于排查：到底是没输出 JSON，还是字段不匹配
+          console.error(
+            `[hints] spine=${spine} 解析得 0 条，原始输出长度=${acc.length}，前 300 字：\n`,
+            acc.slice(0, 300),
+          );
+          const looksJson = acc.includes("{") && acc.includes("}");
+          throw new Error(
+            looksJson
+              ? "模型输出含 JSON 但字段不匹配（应为 target.exact + text），请检查 prompt 或重试"
+              : "模型未输出 JSON 数组（可能输出了纯文本说明），请重试",
+          );
+        }
         const file: HintsFile = {
           version: 1,
           metadata: {

@@ -87,4 +87,12 @@ call "%NPM_CMD%" run preview -- --open --port 5180 --strictPort
 
 if errorlevel 1 (
   echo.
-  echo  
+  echo   [出错] 启动失败，请查看上方红色报错。
+  echo.
+  pause
+  exit /b 1
+)
+
+echo.
+echo   服务器已停止。若上方有红色报错，请把整个窗口截图发我。
+pause

@@ -135,17 +135,44 @@ export function buildPassageRequest(args: {
  * 随文注释的 JSON 输出契约（ANNOTATION_SPEC §2/§9.5）。
  * 拼在 system 末尾，不进用户可编辑的 prompt——格式错误面必须收敛在代码层。
  */
-const HINTS_FORMAT_CONTRACT = `输出格式（严格遵守）：只输出一个 JSON 数组，不要代码围栏，不要数组之外的任何文字。数组元素结构：
-{"kind":"inline","placement":"after","note_type":"reference","target":{"exact":"…","prefix":"…","suffix":"…"},"text":"…"}
-字段规则：
+const HINTS_FORMAT_CONTRACT = `# 输出格式（铁律，违反则整批作废）
+只输出一个 JSON 数组本身，即以 [ 开头、以 ] 结尾。不要用三个反引号包裹，不要在数组前后写任何说明文字、标题或注释——多一个字都会导致解析失败、整批注释被丢弃。
+
+# 每条注释的对象结构（字段名固定，不得改名、不得增删字段）
+{
+  "kind": "inline",
+  "placement": "after",
+  "note_type": "reference",
+  "target": {
+    "exact": "被标注的原文片段",
+    "prefix": "exact 之前 10~20 字原文",
+    "suffix": "exact 之后 10~20 字原文"
+  },
+  "text": "注释正文，中文短句"
+}
+字段含义：
 - kind："inline"（标注一个短语）或 "block"（挂在整段上的提示）
-- placement：block 时 "before"=段前 / "after"=段后；inline 一律 "after"
-- note_type："direction" | "reference" | "perspective" | "background"
-- target.exact / prefix / suffix 必须从【本章全文】逐字复制，一个字符都不得改动、增删或转写（含标点、空格）
-- prefix / suffix 各取紧邻 exact 的 10~20 个字符原文；exact 位于章节开头可省 prefix，位于结尾可省 suffix
-- inline 的 exact 是被标注短语本身（2~15 字）；block 的 exact 取所在段落开头的 10~20 字
+- placement：inline 一律 "after"；block 用 "before"（段前）或 "after"（段后）
+- note_type："direction" | "reference" | "perspective" | "background" 四者之一
+- target：必须是上面的嵌套对象。exact / prefix / suffix 都从【本章全文】逐字复制，含标点与空格，一个字都不得改动、增删或转写
 - text：注释内容，中文短句
-锚定即防剧透边界：每条注释只依据该锚点之前的文本与公共背景知识，绝不引用、暗示锚点之后才出现的内容。`;
+
+# 关键：字段名是硬约束
+注释内容只能放进 "text" 字段；锚点原文只能放进 "target.exact"。禁止使用 note / content / anchor / quote / anchor_text 等任何其他字段名——解析器只认 target.exact 与 text，其余写法一律丢弃。exact 或 text 为空的条目也会被丢弃，请确保每条都有内容。
+
+# 范例（结构照抄，内容自定）
+inline 范例：
+{"kind":"inline","placement":"after","note_type":"reference","target":{"exact":"理查德·马登","prefix":"我随即辨出那个用德语接电话的声音。是","suffix":"的声音"},"text":"正在追捕我的人"}
+block 范例：
+{"kind":"block","placement":"before","note_type":"direction","target":{"exact":"我靠着一棵菩提树坐下","prefix":"我心想这一切既难得又不难得。","suffix":"想到我"},"text":"此处由第三人称叙述切回我的第一人称独白，留意视角转换"}
+
+# 取值要点
+- inline 的 exact = 被标注短语本身（2~15 字）；block 的 exact = 所在段落开头的 10~20 字
+- prefix / suffix 各取紧邻 exact 的 10~20 字原文；exact 位于章节开头可省 prefix，位于结尾可省 suffix
+- kind / placement / note_type 只能用上面列出的固定值，不要自创
+
+# 防剧透（锚定即边界）
+每条注释只依据该锚点之前的文本与公共背景知识，绝不引用、暗示锚点之后才出现的内容。`;
 
 export function buildChapterHintsRequest(args: {
   book: BookMeta;
