@@ -11,6 +11,7 @@ export const paths = {
   conversations: (id: string) => `books/${id}/conversations.json`,
   excerpts: (id: string) => `books/${id}/excerpts.json`,
   bookDir: (id: string) => `books/${id}`,
+  hints: (id: string, spine: number) => `books/${id}/hints/${String(spine).padStart(4, "0")}.json`,
   chapterCache: (id: string, spine: number) =>
     `books/${id}/cache/chapters/${String(spine).padStart(4, "0")}.json`,
   // 产物区（相对产物根）

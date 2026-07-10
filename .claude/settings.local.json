@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:api-docs.deepseek.com)",
+      "Bash(cd *)",
+      "Bash(npm install *)",
+      "Bash(npm run *)",
+      "Bash(npx tsc *)",
+      "Bash(npx vite *)",
+      "Bash(node \"C:/Users/User/AppData/Local/Temp/claude/D--Claude-02-----/ed6e365d-cec3-4bd8-9c41-57eb0a55fbe0/scratchpad/make-epub.mjs\")",
+      "Bash(gh --version)",
+      "Bash(gh auth *)",
+      "Bash(vercel --version)",
+      "Bash(netlify --version)",
+      "Bash(git config *)",
+      "Bash(git add *)",
+      "Bash(git commit -q -m '初始化伴读 AI 阅读工具 *)",
+      "Bash(node \"C:/Users/User/AppData/Local/Temp/claude/D--Claude-02-----/ed6e365d-cec3-4bd8-9c41-57eb0a55fbe0/scratchpad/deploy.mjs\")",
+      "Bash(npm view *)",
+      "Bash(node -e \"console.log\\(require\\('fs'\\).existsSync\\('D:/Claude/02 阅读工具/node_modules/@apache-annotator/selector'\\)\\)\")",
+      "Bash(node -e \"import\\('@apache-annotator/dom'\\).then\\(m => console.log\\(Object.keys\\(m\\).join\\(', '\\)\\)\\)\")",
+      "Bash(find /c/Users/User /d/ -maxdepth 5 -type d -name \"hints\" 2>/dev/null | head -5; echo \"---books-dirs---\"; find /c/Users/User /d/ -maxdepth 4 -type f -name \"progress.json\" 2>/dev/null | head -5)",
+      "PowerShell(cmd /c \"assoc .cmd\"; cmd /c \"ftype cmdfile\"; \"\"; \"HKCU override:\"; try { Get-ItemProperty \"HKCU:\\\\Software\\\\Classes\\\\.cmd\" -ErrorAction Stop | Out-String } catch { \"\\(无 HKCU 覆盖\\)\" }; try { \\(Get-ItemProperty \"HKCU:\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Explorer\\\\FileExts\\\\.cmd\\\\UserChoice\" -ErrorAction Stop\\) | Out-String } catch { \"\\(无 UserChoice\\)\" })",
+      "PowerShell(\"DisableCMD:\"; try { Get-ItemProperty \"HKCU:\\\\Software\\\\Policies\\\\Microsoft\\\\Windows\\\\System\" -Name DisableCMD -ErrorAction Stop | Select-Object DisableCMD | Out-String } catch { \"\\(未设置 - cmd 未被策略禁用\\)\" }; \"SmartAppControl:\"; try { \\(Get-ItemProperty \"HKLM:\\\\SYSTEM\\\\CurrentControlSet\\\\Control\\\\CI\\\\Policy\" -Name VerifiedAndReputablePolicyState -ErrorAction Stop\\).VerifiedAndReputablePolicyState } catch { \"\\(读不到\\)\" }; \"Defender 排除/CFA:\"; try { \\(Get-MpPreference\\).EnableControlledFolderAccess } catch { \"\\(读不到\\)\" })",
+      "Bash(cmdkey /list)",
+      "Bash(rm -rf dist)",
+      "Bash(rm -rf \"D:\\\\Claude\\\\02 阅读工具\\\\dist\\\\.git\" && echo cleaned)"
+    ]
+  }
+}

@@ -15,6 +15,7 @@
 | epub 解析 | epubjs（**只用其解析层** Book/Spine/Archive，不用 Rendition 渲染） | 省掉 container/opf/toc/资源解压的工作量 |
 | 正文渲染 | 自绘：章节 XHTML 经 DOMPurify 消毒后注入阅读区，滚动式排版 | epub.js 的 iframe 渲染难以做选中浮条、行内注释标记；自绘完全可控 |
 | 面板 markdown | marked + DOMPurify | 注释/对话内容按 markdown 显示（复用 epub 消毒依赖，少一个包） |
+| 随文注释锚定 | `@apache-annotator/dom`（W3C TextQuoteSelector 参考实现） | 随文注释（hints）在正文 DOM 内的定位与切分注入；禁止字符串 replace（见 ANNOTATION_SPEC.md） |
 | 路由 | hash 路由（`#/read/:id`） | 静态托管无需服务端 rewrite |
 | AI | **多提供商**：DeepSeek（默认，OpenAI 兼容接口）/ Anthropic 原生 / 自定义 OpenAI 兼容端点，均为浏览器直连 + SSE 流式 | BYOK，无后端；用户指定默认用 DeepSeek |
 
@@ -44,9 +45,11 @@
       ├─ book.epub             # 导入时复制进来的原始 epub（真相源，换浏览器不丢书）
       ├─ book.json             # 元数据
       ├─ progress.json         # 阅读位置
-      ├─ annotations.json      # 注释索引（应用内渲染的数据源）
+      ├─ annotations.json      # 注释索引（导读/深挖，应用内渲染的数据源）
       ├─ conversations.json    # 对话会话
       ├─ excerpts.json         # 摘录索引
+      ├─ hints/
+      │  └─ 0002.json          # 随文注释（每章一文件，按 spine 序号命名，见 ANNOTATION_SPEC.md）
       └─ cache/
          └─ chapters/
             └─ 0002.json       # 章节解析缓存 { html, text }，按 spine 序号命名
@@ -68,9 +71,12 @@
   "contextChars": 6000,
   "chapterNoteMaxChars": 12000,
   "autoChapterNote": true,
+  "autoChapterHints": false,
   "reading": { "fontSize": 18, "lineHeight": 1.9, "maxWidth": 720, "theme": "light" }
 }
 ```
+
+`autoChapterHints`：打开新章节时是否自动生成随文注释（整章送 AI，费用较高，默认关，手动按钮始终可用）。
 
 模型 ID 是可编辑文本框（带预设列表），设置中提供"测试连接"。`deepseek-v4-flash` 这个字符串以 DeepSeek 官方文档为准，如不符在设置中改一下即可（不影响结构）。API key 不在此文件，按提供商存 localStorage（`aireader.key.deepseek` 等）。
 
@@ -79,11 +85,13 @@
 ```json
 {
   "version": 1,
-  "poetry":  { "chapter": "…", "passage": "…", "chat": "…" },
-  "novel":   { "chapter": "…", "passage": "…", "chat": "…" },
-  "social":  { "chapter": "…", "passage": "…", "chat": "…" }
+  "poetry":  { "chapter": "…", "passage": "…", "chat": "…", "hints": "…" },
+  "novel":   { "chapter": "…", "passage": "…", "chat": "…", "hints": "…" },
+  "social":  { "chapter": "…", "passage": "…", "chat": "…", "hints": "…" }
 }
 ```
+
+场景共四个：`chapter` 章节导读 / `passage` 段落深挖 / `chat` 对话 / `hints` 随文注释（批量锚定注释的内容取向；JSON 输出契约由代码层拼接，不在此配置内，防止用户改坏格式）。
 
 **book.json**
 
@@ -137,6 +145,33 @@
 ```
 
 （md 路径固定为该书的 `注释.md`，不需字段记录。）
+
+**hints/{spine}.json**（随文注释，每章一文件；完整规格与决策见 ANNOTATION_SPEC.md）
+
+```json
+{
+  "version": 1,
+  "metadata": {
+    "book": "城堡", "chapter": "第一章 到达", "spine": 4,
+    "language": "zh", "policy": "conservative-no-spoilers", "scope": "chapter",
+    "generatedAt": "2026-07-10T08:00:00Z", "model": "deepseek-v4-flash",
+    "truncated": false, "sourceChars": 8321
+  },
+  "hints": [
+    {
+      "id": "s4-h1-3fa2",
+      "file": "OEBPS/Text/chapter01.xhtml",
+      "kind": "inline",
+      "placement": "after",
+      "target": { "exact": "理查德·马登", "prefix": "接电话的声音。是", "suffix": "的声音。马登在" },
+      "text": "正在追捕“我”的人",
+      "note_type": "reference"
+    }
+  ]
+}
+```
+
+锚定用 W3C TextQuoteSelector（`exact` + `prefix`/`suffix`，`occurrence` 仅兜底），渲染时经 `@apache-annotator/dom` 注入正文 DOM：`block` 插段落级 callout 兄弟节点，`inline` 切分文本节点包标注元素（点击浮层）。未锚定成功的 hint 进右栏章节级兜底列表并展示匹配率，绝不静默丢弃。重新生成 = 整份替换本文件；`注释.md` 中的存档小节按追加保留历史。
 
 **conversations.json**
 
@@ -225,6 +260,24 @@
 ```
 
 HTML 注释行承载机器元数据（Obsidian 预览不可见）；条目标题取引文前 12 字。
+
+随文注释每次生成追加一节（同一份 hints JSON 的存档形态：block → callout、inline → 引文+脚注；脚注 id 含随机段，与历史版本不冲突）：
+
+```markdown
+---
+
+## 第一章 到达 · 随文注释
+<!-- ai-hints {"spine":4,"count":14,"t":"2026-07-10T08:00:00Z"} -->
+
+> [!note] 导向 · 「他站在木桥上」
+> 开篇即长段环境描写：留意"雪"与"空洞的高处"如何先于人物出场。
+
+- 「理查德·马登」[^s4-h2-ab12]
+- 「维克多·鲁纳伯格」[^s4-h3-c901]
+
+[^s4-h2-ab12]: 正在追捕"我"的人（指涉）
+[^s4-h3-c901]: "我"的上线，已暴露（指涉）
+```
 
 **对话.md**（自动落盘，见 §1.5-4；一个会话 = 一个 H2 小节，轮次逐条追加）：
 
@@ -347,7 +400,8 @@ interface StorageProvider {
 
 交互清单：
 
-- **章节打开**：加载该章 → 若 `autoChapterNote` 且本章无 `kind:chapter` 注释 → 自动生成，右栏顶部卡片流式显示。
+- **章节打开**：加载该章 → 若 `autoChapterNote` 且本章无 `kind:chapter` 注释 → 自动生成，右栏顶部卡片流式显示。同时载入本章 hints JSON 并注入正文（若 `autoChapterHints` 且本章无 hints 文件则自动生成）。
+- **随文注释**：右栏注释 Tab「生成本章随文注释」按钮 → 整章送 AI 产出 hints JSON → 写状态区 + 追加 md 存档 + 注入正文。正文内 block callout 直接可读；inline 标注点击弹浮层。面板显示匹配率与未锚定兜底列表，提供 重新生成 / 显示・隐藏。
 - **选中浮条**：深挖 → 生成锚定注释（右栏流式显示，完成后正文加下划线标记并写 md）；提问 → 右栏切到对话页并新建会话，携带选中语境；摘录 → 存为摘录并追加 md。
 - **双向联动**：点正文注释标记 → 右栏滚到对应卡片并高亮；点卡片 → 正文滚到锚点。
 - **进度**：滚动节流保存 progress.json；`percent ≈ (spine + 章内比例) / spineLength`。
@@ -377,7 +431,7 @@ src/
 ├─ components/
 │  ├─ shelf/    BookCard, ContentTypeDialog(导入选类型), FirstRunWizard, RestoreAccess
 │  ├─ reader/   ReaderHeader(含 Aa 偏好弹层), TocSidebar,
-│  │            ChapterView(正文注入/块编号/高亮角标/选中浮条/进度上报/章节导航)
+│  │            ChapterView(正文注入/块编号/高亮角标/选中浮条/进度上报/章节导航/hints注入与点击浮层)
 │  ├─ panel/    SidePanel(Tab容器), AnnotationsTab(导读卡+注释卡), ChatTab(会话+消息流+输入),
 │  │            ExcerptsTab(含 ImportExcerptsDialog：Kindle txt / 通用文本粘贴)
 │  ├─ settings/ SettingsModal（AI提供商/存储/Prompt编辑/上下文 四区）
@@ -392,7 +446,8 @@ src/
 │  ├─ storage/  provider.ts(接口) fsa.ts idbStorage.ts index.ts(模式/迁移) handles.ts paths.ts
 │  ├─ epub/     import.ts(hash→复制→元数据/目录/封面) parse.ts(实例池/章节解析缓存/资源blob解析)
 │  ├─ anchor/   anchor.ts        # collectBlocks / createAnchorFromRange / resolveAnchor(三级降级)
-│  ├─ ai/       client.ts(多提供商SSE) context.ts(防剧透窗口,§4.3) prompts.ts(默认prompt+组装)
+│  ├─ hints/    match.ts(TextQuoteSelector 匹配管线) inject.ts(DOM 注入/清理) parse.ts(AI 输出容错解析)
+│  ├─ ai/       client.ts(多提供商SSE) context.ts(防剧透窗口,§4.3) prompts.ts(默认prompt+组装+hints输出契约)
 │  ├─ product/  markdown.ts      # 三类 md 模板 + appendMarkdown 调用
 │  └─ import/   kindle.ts        # My Clippings 解析 / 通用文本分条 / 引文回原文定位
 └─ types/                        # §1.2 各 schema 的 TS 类型 + FSA 补充声明
@@ -429,8 +484,11 @@ src/
 | 场景 | 携带上下文 | 硬边界（此后文本绝不发送） |
 |---|---|---|
 | 章节导读 | 前文最后 `contextChars` 字 + 已读章节标题列表 + 本章全文（截断至 `chapterNoteMaxChars`） | 本章末尾；prompt 同时要求不透露本章内关键转折 |
+| 随文注释（hints） | 同章节导读（前文窗口 + 本章全文，截断沿用 `chapterNoteMaxChars`，截断记入 `metadata.truncated`） | 本章末尾；prompt 要求每条注释只依据其**锚点之前**的文本 |
 | 段落深挖 | 锚点前 `contextChars` 字（可跨章向前取） | 选区末尾 |
 | 对话 | 当前阅读位置前 `contextChars` 字 + 会话历史（超长丢最早轮） + 发起时的选中引文 | 当前阅读位置 |
+
+随文注释请求非对话式：max_tokens 4096，流式接收但整体解析（JSON 数组，输出契约在代码层拼进 system，见 ANNOTATION_SPEC §9.5）。
 
 边界在**代码层**裁剪（不只靠 prompt 约束），prompt 中再声明一次防剧透规则，双保险。
 
@@ -461,3 +519,12 @@ src/
 4. **选中浮条含"摘录"操作**；摘录来源共三种：选中摘录、Kindle My Clippings 导入、通用文本粘贴导入。✔ 用户修改后确认
 5. **默认提供商 DeepSeek，默认模型 `deepseek-v4-flash`**（ID 字符串以 DeepSeek 官方文档为准，设置中可改）；架构改为多提供商（DeepSeek / Anthropic / 自定义 OpenAI 兼容）。✔ 用户修改后确认
 6. **md 是只增记录**：应用内删除注释只从界面/JSON 移除，md 中历史块保留。✔ 确认
+
+## 8. 决策记录（2026-07-10 用户确认，随文注释子系统）
+
+规格见 ANNOTATION_SPEC.md（含其 §9 实现决策记录）。要点：
+
+1. **随文注释手动触发**（面板按钮），设置项 `autoChapterHints` 默认关；章节导读保留现状并存。✔ 确认
+2. **深挖保持现状**（右栏长注释卡），本轮不并入 hint 体系。✔ 确认
+3. **Obsidian 存档形态 = callout + 脚注混合**：每次生成追加一节进 `注释.md`；block → callout、inline → 引文+脚注 `[^id]`；不写入整章正文。✔ 确认
+4. 锚定库选 `@apache-annotator/dom`；匹配失败走归一化回退与 occurrence 兜底，未匹配进面板兜底列表 + 匹配率。（实现方决定，依 ANNOTATION_SPEC §5.2/§6）

@@ -25,15 +25,25 @@ export const DEFAULT_SETTINGS: Settings = {
   contextChars: 6000,
   chapterNoteMaxChars: 12000,
   autoChapterNote: true,
+  autoChapterHints: false,
   reading: { fontSize: 18, lineHeight: 1.9, maxWidth: 720, theme: "light" },
 };
 
+const EMPTY_PROMPT_SET: PromptSet = { chapter: "", passage: "", chat: "", hints: "" };
+
 const EMPTY_PROMPTS: Prompts = {
   version: 1,
-  poetry: { chapter: "", passage: "", chat: "" },
-  novel: { chapter: "", passage: "", chat: "" },
-  social: { chapter: "", passage: "", chat: "" },
+  poetry: { ...EMPTY_PROMPT_SET },
+  novel: { ...EMPTY_PROMPT_SET },
+  social: { ...EMPTY_PROMPT_SET },
 };
+
+/** 磁盘上的 prompts.json 可能来自旧版本（缺 hints 等字段），逐字段补齐 */
+function mergePrompts(loaded: Partial<Prompts> | null): Prompts {
+  if (!loaded) return EMPTY_PROMPTS;
+  const one = (s?: Partial<PromptSet>): PromptSet => ({ ...EMPTY_PROMPT_SET, ...s });
+  return { version: 1, poetry: one(loaded.poetry), novel: one(loaded.novel), social: one(loaded.social) };
+}
 
 function mergeSettings(loaded: Partial<Settings> | null): Settings {
   if (!loaded) return DEFAULT_SETTINGS;
@@ -79,7 +89,7 @@ async function loadPersisted(set: (p: Partial<SettingsState>) => void) {
   const p = await storage().readJson<Prompts>("state", paths.prompts);
   const settings = mergeSettings(s);
   applyTheme(settings);
-  set({ settings, prompts: p ?? EMPTY_PROMPTS });
+  set({ settings, prompts: mergePrompts(p) });
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({

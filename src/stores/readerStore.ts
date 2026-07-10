@@ -1,12 +1,27 @@
 import { create } from "zustand";
-import type { Anchor, Annotation, AnnotationsFile, BookMeta, Excerpt, ExcerptsFile, Progress } from "../types/models";
+import type {
+  Anchor,
+  Annotation,
+  AnnotationsFile,
+  BookMeta,
+  Excerpt,
+  ExcerptsFile,
+  HintsFile,
+  Progress,
+} from "../types/models";
 import { storage } from "../services/storage";
 import { paths } from "../services/storage/paths";
 import { chapterText, closeEpub, loadChapter } from "../services/epub/parse";
 import { beforeWindow, chapterFullText, chapterLabelFor, readChapterTitles } from "../services/ai/context";
-import { buildChapterNoteRequest, buildPassageRequest, effectivePromptSet } from "../services/ai/prompts";
+import {
+  buildChapterHintsRequest,
+  buildChapterNoteRequest,
+  buildPassageRequest,
+  effectivePromptSet,
+} from "../services/ai/prompts";
 import { friendlyAiError, resolveAiConfig, streamChat } from "../services/ai/client";
-import { appendAnnotationMd, appendExcerptMd } from "../services/product/markdown";
+import { parseHintsOutput } from "../services/hints/parse";
+import { appendAnnotationMd, appendExcerptMd, appendHintsMd } from "../services/product/markdown";
 import { locateQuote } from "../services/import/kindle";
 import { useSettingsStore } from "./settingsStore";
 import { toast } from "./uiStore";
@@ -27,8 +42,9 @@ const defaultProgress = (): Progress => ({
   updatedAt: nowIso(),
 });
 
-// 章节导读并发防抖 & 进度写盘节流（模块级，不进 store）
+// 章节导读/随文注释并发防抖 & 进度写盘节流（模块级，不进 store）
 const noteInflight = new Set<string>();
+const hintsInflight = new Set<string>();
 let progressTimer: ReturnType<typeof setTimeout> | null = null;
 
 function scheduleProgressWrite(bookId: string, progress: Progress) {
@@ -48,6 +64,14 @@ function flushProgressWrite(bookId: string, progress: Progress) {
     .catch(() => {});
 }
 
+/** ChapterView 匹配/注入完成后的回执：面板据此显示匹配率与未锚定兜底列表 */
+export interface HintRenderReport {
+  spine: number;
+  total: number;
+  anchored: string[];
+  missed: string[];
+}
+
 interface ReaderState {
   bookId: string | null;
   book: BookMeta | null;
@@ -61,6 +85,13 @@ interface ReaderState {
   focus: { id: string; source: "text" | "panel"; nonce: number } | null;
   /** 章节渲染完成后需恢复的滚动块 */
   pendingScrollPara: number | null;
+  /** 当前章节的随文注释文件（无则 null） */
+  hints: HintsFile | null;
+  /** 正在生成随文注释的 spine（null = 空闲） */
+  hintsGeneratingSpine: number | null;
+  /** 生成中已流出的字符数（进度显示） */
+  hintsProgress: number;
+  hintRender: HintRenderReport | null;
 
   openBook(id: string): Promise<boolean>;
   closeBook(): void;
@@ -69,6 +100,8 @@ interface ReaderState {
   reportPosition(para: number): void;
   deepDive(anchor: Anchor): Promise<void>;
   generateChapterNote(force?: boolean): Promise<void>;
+  generateChapterHints(auto?: boolean): Promise<void>;
+  reportHintRender(report: HintRenderReport | null): void;
   addExcerptFromAnchor(anchor: Anchor): Promise<void>;
   importExcerptQuotes(quotes: string[], source: "kindle" | "text"): Promise<{ located: number; unlocated: number }>;
   removeAnnotation(id: string): Promise<void>;
@@ -126,6 +159,23 @@ export const useReaderStore = create<ReaderState>((set, get) => {
     }
   }
 
+  /** 载入当前章节的 hints 文件；没有且开了自动生成则触发生成 */
+  async function loadChapterHints() {
+    const { bookId, chapter } = get();
+    if (!bookId || !chapter) return;
+    const spine = chapter.spine;
+    const file = await storage()
+      .readJson<HintsFile>("state", paths.hints(bookId, spine))
+      .catch(() => null);
+    if (get().bookId !== bookId || get().chapter?.spine !== spine) return; // 已切章/关书
+    if (file && file.version === 1 && Array.isArray(file.hints)) {
+      set({ hints: file });
+      return;
+    }
+    const settings = useSettingsStore.getState().settings;
+    if (settings.autoChapterHints && resolveAiConfig(settings)) void get().generateChapterHints(true);
+  }
+
   return {
     bookId: null,
     book: null,
@@ -137,6 +187,10 @@ export const useReaderStore = create<ReaderState>((set, get) => {
     streaming: {},
     focus: null,
     pendingScrollPara: null,
+    hints: null,
+    hintsGeneratingSpine: null,
+    hintsProgress: 0,
+    hintRender: null,
 
     async openBook(id) {
       const book = await storage().readJson<BookMeta>("state", paths.book(id));
@@ -156,6 +210,8 @@ export const useReaderStore = create<ReaderState>((set, get) => {
         chapter: null,
         streaming: {},
         focus: null,
+        hints: null,
+        hintRender: null,
       });
       await get().openSpine(Math.min(progress.spine, book.spineLength - 1), progress.anchor.para);
       return true;
@@ -176,6 +232,8 @@ export const useReaderStore = create<ReaderState>((set, get) => {
         streaming: {},
         focus: null,
         progress: defaultProgress(),
+        hints: null,
+        hintRender: null,
       });
     },
 
@@ -198,9 +256,12 @@ export const useReaderStore = create<ReaderState>((set, get) => {
           chapterLoading: false,
           pendingScrollPara: para,
           progress,
+          hints: null,
+          hintRender: null,
         });
         scheduleProgressWrite(bookId, progress);
         void get().generateChapterNote(false);
+        void loadChapterHints();
       } catch (e) {
         set({ chapterLoading: false });
         toast("error", e instanceof Error ? e.message : "章节加载失败");
@@ -299,6 +360,79 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       } finally {
         noteInflight.delete(key);
       }
+    },
+
+    async generateChapterHints(auto = false) {
+      const { bookId, book, chapter } = get();
+      if (!bookId || !book || !chapter) return;
+      const spine = chapter.spine;
+      const settings = useSettingsStore.getState().settings;
+      const prompts = useSettingsStore.getState().prompts;
+      const cfg = resolveAiConfig(settings);
+      if (!cfg) {
+        if (!auto) toast("error", "请先在设置中配置 AI 提供商与 API key");
+        return;
+      }
+      if (auto && get().hints) return; // 自动模式只补缺，不覆盖
+      const key = `${bookId}:${spine}`;
+      if (hintsInflight.has(key)) return;
+      hintsInflight.add(key);
+      set({ hintsGeneratingSpine: spine, hintsProgress: 0 });
+      try {
+        // 防剧透边界 = 本章末尾（SPEC §4.3）；每条注释的锚点前边界由 prompt 约束
+        const [win, full] = await Promise.all([
+          beforeWindow(bookId, { spine, para: null }, settings.contextChars),
+          chapterFullText(bookId, spine, settings.chapterNoteMaxChars),
+        ]);
+        const req = buildChapterHintsRequest({
+          book,
+          chapterLabel: chapterLabelFor(book, spine),
+          readTitles: readChapterTitles(book, spine - 1),
+          prevWindow: win,
+          chapterText: full.text,
+          truncated: full.truncated,
+          promptSet: effectivePromptSet(prompts, book.contentType),
+        });
+        let acc = "";
+        for await (const chunk of streamChat(cfg, { ...req, maxTokens: 4096 })) {
+          acc += chunk;
+          set({ hintsProgress: acc.length });
+        }
+        const hints = parseHintsOutput(acc, { spine, file: chapter.href });
+        if (hints.length === 0) throw new Error("模型输出无法解析为注释列表，请重试");
+        const file: HintsFile = {
+          version: 1,
+          metadata: {
+            book: book.title,
+            chapter: chapterLabelFor(book, spine),
+            spine,
+            language: "zh",
+            policy: "conservative-no-spoilers",
+            scope: "chapter",
+            generatedAt: nowIso(),
+            model: cfg.model,
+            truncated: full.truncated,
+            sourceChars: full.text.length,
+          },
+          hints,
+        };
+        // 重新生成 = 整份替换 JSON；md 存档只追加，历史版本保留
+        await storage().writeStateJson(paths.hints(bookId, spine), file);
+        if (get().bookId === bookId && get().chapter?.spine === spine) {
+          set({ hints: file, hintRender: null });
+        }
+        await appendHintsMd(book, file);
+        toast("success", `已生成 ${hints.length} 条随文注释`);
+      } catch (e) {
+        toast("error", `随文注释生成失败：${friendlyAiError(e)}`);
+      } finally {
+        hintsInflight.delete(key);
+        set((s) => (s.hintsGeneratingSpine === spine ? { hintsGeneratingSpine: null, hintsProgress: 0 } : {}));
+      }
+    },
+
+    reportHintRender(report) {
+      set({ hintRender: report });
     },
 
     async addExcerptFromAnchor(anchor) {

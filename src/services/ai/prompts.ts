@@ -24,6 +24,12 @@ export const DEFAULT_PROMPTS: Record<"poetry" | "novel" | "social", PromptSet> =
 - 若有典故、双关、反常的写法，点明它
 只依据已读文本，200 字以内，直接说要点。`,
     chat: `与读者围绕这本小说的已读部分展开讨论。可以分析人物动机、叙事技巧、主题线索，也可以回应读者的联想。观点要落在文本证据上。`,
+    hints: `通读本章，产出一批锚定在具体文字上的「随文注释」，随正文显示。优先标注：
+- 指涉（inline / reference）：人名、代词、称呼实际指谁——尤其换了叫法、久别重现、或初次登场的
+- 视角与文体（perspective）：叙述者切换、插叙倒叙的起点、信件文书等文体变化处
+- 段落导向（block / direction）：结构转折处的段落在做什么、该带着什么问题读
+- 背景钥匙（block / background）：理解本段必需的外部常识，一两句讲清
+数量随章节长度与难度定，通常 6~18 条；inline 为主，block 用在真正需要停下来的地方。宁缺毋滥，显而易见的不标。`,
   },
   poetry: {
     chapter: `读者翻开了新的一组诗。写一段导读，注入解码所需的钥匙：
@@ -37,6 +43,12 @@ export const DEFAULT_PROMPTS: Record<"poetry" | "novel" | "social", PromptSet> =
 - 声音层面：节奏、押韵、音效如何服务于意义
 不要把诗讲死，保留多义性。200 字以内。`,
     chat: `与读者讨论诗歌。提供背景钥匙、比较多种可能的解读、示范细读，帮读者建立自己的读法，避免给"标准答案"。`,
+    hints: `通读这组诗，产出锚定在具体诗句上的「随文注释」。优先标注：
+- 难词与倒装（inline / reference）：字面在说什么，补全省略
+- 意象与典故（inline / background）：来历与传统含义，一两句点破
+- 声音与格律（block / direction）：韵式、节奏在哪里起作用
+- 说话者（perspective）：这几行是谁在说、对谁说
+通常 5~15 条。注释是钥匙不是答案，保留多义性。`,
   },
   social: {
     chapter: `读者翻开学术/社科著作的新一章。写一段导读：
@@ -50,6 +62,12 @@ export const DEFAULT_PROMPTS: Record<"poetry" | "novel" | "social", PromptSet> =
 - 作者在与谁对话（明说或暗指的对手、学派）
 250 字以内。`,
     chat: `与读者讨论这本社科著作。你的价值在于：梳理论证脉络、分析论证方法的强弱、把概念与读者自身的思考和现实议题连接起来。认真对待读者的质疑，检验它是否成立。`,
+    hints: `通读本章，产出锚定在具体文字上的「随文注释」。优先标注：
+- 概念（inline / reference）：术语首次出现处，用日常语言一句话解释
+- 论证节点（block / direction）：前提、论据、转折、让步、小结所在段落，指出它在论证中的角色
+- 对话对象（inline / reference）：作者点名或暗指的学派、人物是谁
+- 背景（block / background）：读懂本段需要的历史/学科常识
+通常 8~20 条。解释要落地，别复述原文。`,
   },
 };
 
@@ -60,6 +78,7 @@ export function effectivePromptSet(prompts: Prompts | null, contentType: BookMet
     chapter: u?.chapter?.trim() || d.chapter,
     passage: u?.passage?.trim() || d.passage,
     chat: u?.chat?.trim() || d.chat,
+    hints: u?.hints?.trim() || d.hints,
   };
 }
 
@@ -109,6 +128,48 @@ export function buildPassageRequest(args: {
   return {
     system: `${BASE_SYSTEM}\n\n${promptSet.passage}`,
     messages: [{ role: "user", content }],
+  };
+}
+
+/**
+ * 随文注释的 JSON 输出契约（ANNOTATION_SPEC §2/§9.5）。
+ * 拼在 system 末尾，不进用户可编辑的 prompt——格式错误面必须收敛在代码层。
+ */
+const HINTS_FORMAT_CONTRACT = `输出格式（严格遵守）：只输出一个 JSON 数组，不要代码围栏，不要数组之外的任何文字。数组元素结构：
+{"kind":"inline","placement":"after","note_type":"reference","target":{"exact":"…","prefix":"…","suffix":"…"},"text":"…"}
+字段规则：
+- kind："inline"（标注一个短语）或 "block"（挂在整段上的提示）
+- placement：block 时 "before"=段前 / "after"=段后；inline 一律 "after"
+- note_type："direction" | "reference" | "perspective" | "background"
+- target.exact / prefix / suffix 必须从【本章全文】逐字复制，一个字符都不得改动、增删或转写（含标点、空格）
+- prefix / suffix 各取紧邻 exact 的 10~20 个字符原文；exact 位于章节开头可省 prefix，位于结尾可省 suffix
+- inline 的 exact 是被标注短语本身（2~15 字）；block 的 exact 取所在段落开头的 10~20 字
+- text：注释内容，中文短句
+锚定即防剧透边界：每条注释只依据该锚点之前的文本与公共背景知识，绝不引用、暗示锚点之后才出现的内容。`;
+
+export function buildChapterHintsRequest(args: {
+  book: BookMeta;
+  chapterLabel: string;
+  readTitles: string[];
+  prevWindow: string;
+  chapterText: string;
+  truncated: boolean;
+  promptSet: PromptSet;
+}): { system: string; messages: ChatMessage[] } {
+  const { book, chapterLabel, readTitles, prevWindow, chapterText, truncated, promptSet } = args;
+  const parts = [
+    bookLine(book),
+    `【当前章节】${chapterLabel}`,
+    `【此前已读章节】${readTitles.length ? readTitles.join("、") : "（无，这是开头）"}`,
+  ];
+  if (prevWindow) parts.push(`【前文结尾（仅供衔接理解）】\n${prevWindow}`);
+  parts.push(
+    `【本章全文${truncated ? "（超长，已截断尾部，只为看到的部分作注）" : ""}】\n${chapterText}`,
+    "请通读本章全文，输出随文注释 JSON 数组。"
+  );
+  return {
+    system: `${BASE_SYSTEM}\n\n${promptSet.hints}\n\n${HINTS_FORMAT_CONTRACT}`,
+    messages: [{ role: "user", content: parts.join("\n\n") }],
   };
 }
 

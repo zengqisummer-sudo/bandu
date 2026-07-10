@@ -106,6 +106,71 @@ body {
   background-color: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
+/* ---- 随文注释（hints）：inline 标注 + block callout ---- */
+.chapter-content mark.hint-mark {
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  border-bottom: 2px dotted color-mix(in srgb, var(--accent) 65%, transparent);
+  padding-bottom: 1px;
+  transition: background-color 0.15s ease;
+}
+.chapter-content mark.hint-mark:hover {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+}
+.chapter-content mark.hint-nt-perspective {
+  border-bottom-color: color-mix(in srgb, #8a7ac9 75%, transparent);
+}
+.chapter-content mark.hint-nt-background {
+  border-bottom-color: color-mix(in srgb, #5f8f6a 75%, transparent);
+}
+
+.chapter-content .hint-callout {
+  display: block;
+  margin: 0.7em 0;
+  padding: 0.55em 0.95em;
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent-soft) 62%, transparent);
+  font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 0.74em;
+  line-height: 1.75;
+  color: var(--ink-soft);
+  text-indent: 0;
+}
+.chapter-content .hint-callout.hint-nt-perspective { border-left-color: #8a7ac9; }
+.chapter-content .hint-callout.hint-nt-background { border-left-color: #5f8f6a; }
+.hint-callout-label {
+  display: inline-block;
+  margin-right: 0.6em;
+  font-weight: 600;
+  font-size: 0.92em;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+}
+.hint-callout.hint-nt-perspective .hint-callout-label { color: #8a7ac9; }
+.hint-callout.hint-nt-background .hint-callout-label { color: #5f8f6a; }
+.hint-callout-body strong { font-weight: 600; color: var(--ink); }
+
+/* 类型徽标（浮层 / 面板兜底列表） */
+.hint-badge {
+  display: inline-block;
+  padding: 0 0.55em;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  line-height: 1.7;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.hint-badge.hint-nt-perspective {
+  color: #8a7ac9;
+  background: color-mix(in srgb, #8a7ac9 14%, transparent);
+}
+.hint-badge.hint-nt-background {
+  color: #5f8f6a;
+  background: color-mix(in srgb, #5f8f6a 14%, transparent);
+}
+
 /* 注释角标 */
 .anno-marker {
   cursor: pointer;

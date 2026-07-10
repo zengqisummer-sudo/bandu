@@ -1,7 +1,8 @@
-import type { Annotation, BookMeta, ChatSession, ChatTurn, Excerpt } from "../../types/models";
+import type { Annotation, BookMeta, ChatSession, ChatTurn, Excerpt, HintsFile } from "../../types/models";
 import { storage } from "../storage";
 import { paths } from "../storage/paths";
 import { chapterLabelFor } from "../ai/context";
+import { calloutTag, noteTypeLabel } from "../hints/noteTypes";
 import { dateStr, truncate } from "../../lib/utils";
 
 // 产物 markdown 模板与写入（SPEC §1.4 / §1.5）。
@@ -48,6 +49,45 @@ export async function appendAnnotationMd(book: BookMeta, anno: Annotation): Prom
   if (anno.kind === "passage" && anno.anchor) parts.push(quoteBlock(anno.anchor.quote), "");
   parts.push(anno.content.trim());
   await storage().appendMarkdown(paths.productNotes(book.productDir), parts.join("\n"), frontmatter(book, "阅读注释"));
+}
+
+/**
+ * 随文注释存档（ANNOTATION_SPEC §9.4）：同一份 hints JSON 的 Obsidian 形态。
+ * block → callout；inline → 引原文短语 + 脚注 [^id]（id 含随机段，历史版本不冲突）。
+ * 每次生成追加一节，不写入整章正文。
+ */
+export async function appendHintsMd(book: BookMeta, file: HintsFile): Promise<void> {
+  const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
+  const label = file.metadata.chapter || chapterLabelFor(book, file.metadata.spine);
+  const meta = metaComment("ai-hints", {
+    spine: file.metadata.spine,
+    count: file.hints.length,
+    t: file.metadata.generatedAt,
+  });
+  const parts: string[] = ["---", "", `## ${label} · 随文注释`, meta, ""];
+
+  const blocks = file.hints.filter((h) => h.kind === "block");
+  const inlines = file.hints.filter((h) => h.kind !== "block");
+
+  for (const h of blocks) {
+    const where = h.placement === "after" ? "段后" : "段前";
+    parts.push(
+      `> [!${calloutTag(h.note_type)}] ${noteTypeLabel(h.note_type)}（${where}）· 「${truncate(oneLine(h.target.exact), 14)}」`,
+      `> ${oneLine(h.text)}`,
+      ""
+    );
+  }
+  if (inlines.length > 0) {
+    for (const h of inlines) parts.push(`- 「${oneLine(h.target.exact)}」[^${h.id}]`);
+    parts.push("");
+    for (const h of inlines) parts.push(`[^${h.id}]: ${oneLine(h.text)}（${noteTypeLabel(h.note_type)}）`);
+  }
+
+  await storage().appendMarkdown(
+    paths.productNotes(book.productDir),
+    parts.join("\n").trimEnd(),
+    frontmatter(book, "阅读注释")
+  );
 }
 
 export async function appendExcerptMd(book: BookMeta, ex: Excerpt): Promise<void> {

@@ -1,12 +1,16 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import type { Anchor } from "../../types/models";
+import type { Anchor, Hint } from "../../types/models";
 import { useReaderStore } from "../../stores/readerStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useChatStore } from "../../stores/chatStore";
 import { createAnchorFromRange, numberBlocks, resolveAnchor } from "../../services/anchor/anchor";
 import { resolveResources } from "../../services/epub/parse";
+import { matchHints } from "../../services/hints/match";
+import { injectHints, removeInjectedHints } from "../../services/hints/inject";
+import { noteTypeClass, noteTypeLabel } from "../../services/hints/noteTypes";
+import { Markdown } from "../common/Markdown";
 import { throttle } from "../../lib/utils";
 
 // CSS Custom Highlight API（Chrome/Edge 105+；本应用本就依赖 Chromium）
@@ -31,6 +35,8 @@ export function ChapterView() {
   const annotations = useReaderStore((s) => s.annotations);
   const excerpts = useReaderStore((s) => s.excerpts);
   const focus = useReaderStore((s) => s.focus);
+  const hintsFile = useReaderStore((s) => s.hints);
+  const showHints = useUiStore((s) => s.showHints);
   const reading = useSettingsStore((s) => s.settings.reading);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -38,7 +44,10 @@ export function ChapterView() {
   const blocksRef = useRef<HTMLElement[]>([]);
   const markersRef = useRef<HTMLElement[]>([]);
   const [domVersion, setDomVersion] = useState(0);
+  /** hints 注入完成的轮次；旧式高亮/角标必须等它，避免文本节点被切分后 Range 失效 */
+  const [hintPass, setHintPass] = useState(0);
   const [popover, setPopover] = useState<PopoverState | null>(null);
+  const [hintPop, setHintPop] = useState<{ hint: Hint; x: number; y: number } | null>(null);
 
   // ---- 注入章节 DOM、编号块、恢复滚动位置 ----
   useLayoutEffect(() => {
@@ -59,13 +68,48 @@ export function ChapterView() {
     }
     useReaderStore.getState().clearPendingScroll();
     setPopover(null);
+    setHintPop(null);
     setDomVersion((v) => v + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chapter?.spine, chapter?.html, bookId]);
 
-  // ---- 注释/摘录高亮 + 角标 ----
+  // ---- 随文注释：匹配（只读）→ 注入（改 DOM）→ hintPass++ 放行旧式高亮 ----
+  // 隐藏时仍匹配（面板要匹配率与兜底列表），只是不注入。
   useEffect(() => {
-    if (!chapter || domVersion === 0) return;
+    const el = contentRef.current;
+    if (!el || !chapter || domVersion === 0) return;
+    let cancelled = false;
+    setHintPop(null);
+    removeInjectedHints(el);
+    const file = hintsFile && hintsFile.metadata.spine === chapter.spine ? hintsFile : null;
+    if (!file || file.hints.length === 0) {
+      useReaderStore.getState().reportHintRender(null);
+      setHintPass((p) => p + 1);
+      return;
+    }
+    void (async () => {
+      const { matches, missed } = await matchHints(el, file.hints);
+      if (cancelled) return;
+      let injectFailed: string[] = [];
+      if (showHints) injectFailed = injectHints(el, matches);
+      const anchored = matches.map((m) => m.hint.id).filter((id) => !injectFailed.includes(id));
+      useReaderStore.getState().reportHintRender({
+        spine: chapter.spine,
+        total: file.hints.length,
+        anchored,
+        missed: [...missed.map((h) => h.id), ...injectFailed],
+      });
+      setHintPass((p) => p + 1);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [domVersion, hintsFile, showHints]);
+
+  // ---- 注释/摘录高亮 + 角标（在 hints 注入完成后运行） ----
+  useEffect(() => {
+    if (!chapter || hintPass === 0) return;
     const blocks = blocksRef.current;
     markersRef.current.forEach((m) => m.remove());
     markersRef.current = [];
@@ -106,7 +150,8 @@ export function ChapterView() {
       api.reg.set("excerpt", new api.H(...exRanges));
       api.reg.delete("anno-active");
     }
-  }, [domVersion, annotations, excerpts, chapter]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hintPass, annotations, excerpts, chapter]);
 
   // ---- 面板 → 正文聚焦 ----
   useEffect(() => {
@@ -169,13 +214,27 @@ export function ChapterView() {
     }, 0);
   };
 
-  // ---- 角标点击 → 聚焦面板 ----
+  // ---- 角标点击 → 聚焦面板；hint 标注点击 → 行内浮层 ----
   const onClick = (e: ReactMouseEvent) => {
-    const t = (e.target as HTMLElement).closest?.(".anno-marker") as HTMLElement | null;
+    const target = e.target as HTMLElement;
+    const t = target.closest?.(".anno-marker") as HTMLElement | null;
     if (t?.dataset.annoId) {
+      setHintPop(null);
       useReaderStore.getState().setFocus(t.dataset.annoId, "text");
       useUiStore.getState().setPanel(true, "annos");
+      return;
     }
+    const hm = target.closest?.("mark.hint-mark") as HTMLElement | null;
+    if (hm?.dataset.hintId) {
+      const file = useReaderStore.getState().hints;
+      const hint = file?.hints.find((h) => h.id === hm.dataset.hintId);
+      if (hint) {
+        const rect = hm.getBoundingClientRect();
+        setHintPop({ hint, x: rect.left + rect.width / 2, y: rect.bottom });
+        return;
+      }
+    }
+    setHintPop(null);
   };
 
   const act = (kind: "dive" | "ask" | "excerpt") => {
@@ -206,6 +265,7 @@ export function ChapterView() {
       ref={scrollRef}
       onScroll={() => {
         if (popover) setPopover(null);
+        if (hintPop) setHintPop(null);
         reportScroll();
       }}
       className={`relative min-w-0 flex-1 overflow-y-auto transition-opacity ${chapterLoading ? "opacity-50" : ""}`}
@@ -240,6 +300,29 @@ export function ChapterView() {
       </div>
 
       {popover && <SelectionPopover x={popover.x} y={popover.y} onAct={act} />}
+      {hintPop && <HintPopover hint={hintPop.hint} x={hintPop.x} y={hintPop.y} onClose={() => setHintPop(null)} />}
+    </div>
+  );
+}
+
+/** 行内注释浮层：点击 hint 标注短语弹出（ANNOTATION_SPEC §5.4） */
+function HintPopover({ hint, x, y, onClose }: { hint: Hint; x: number; y: number; onClose: () => void }) {
+  const width = 320;
+  const left = Math.min(Math.max(width / 2 + 12, x), window.innerWidth - width / 2 - 12);
+  const top = Math.min(y + 8, window.innerHeight - 180);
+  return (
+    <div
+      className="fixed z-40 -translate-x-1/2 rounded-xl border border-line bg-card p-3 shadow-xl"
+      style={{ left, top, width }}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <div className="mb-1.5 flex items-center justify-between">
+        <span className={`hint-badge hint-nt-${noteTypeClass(hint.note_type)}`}>{noteTypeLabel(hint.note_type)}</span>
+        <button onClick={onClose} className="px-1 text-xs text-ink-faint hover:text-ink" title="关闭">
+          ✕
+        </button>
+      </div>
+      <Markdown text={hint.text} />
     </div>
   );
 }

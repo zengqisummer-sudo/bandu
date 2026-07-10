@@ -24,13 +24,22 @@ export function sanitizeFileName(name: string): string {
   return cleaned || "未命名";
 }
 
-/** 文本归一化：折叠空白，统一引号，用于模糊匹配 */
+/** 归一化单字符：空白与引号丢弃（null），逗号统一为全角。hints 匹配的偏移映射依赖"每个保留字符独立变换"这一性质 */
+export function normalizeChar(ch: string): string | null {
+  if (/\s/.test(ch)) return null;
+  if (ch === "“" || ch === "”" || ch === '"' || ch === "‘" || ch === "’" || ch === "'") return null;
+  if (ch === ",") return "，";
+  return ch;
+}
+
+/** 文本归一化：折叠空白、统一引号逗号，用于模糊匹配（逐字符走 normalizeChar，两侧语义永远一致） */
 export function normalizeForMatch(s: string): string {
-  return s
-    .replace(/\s+/g, "")
-    .replace(/[“”"]/g, "")
-    .replace(/[‘’']/g, "")
-    .replace(/[，,]/g, "，");
+  let out = "";
+  for (const ch of s) {
+    const c = normalizeChar(ch);
+    if (c) out += c;
+  }
+  return out;
 }
 
 export function truncate(s: string, max: number): string {

@@ -234,7 +234,7 @@ const TYPE_TABS: { id: ContentType; label: string }[] = [
   { id: "social", label: "社科" },
 ];
 
-const SCENE_LABELS = { chapter: "章节导读", passage: "段落深挖", chat: "对话" } as const;
+const SCENE_LABELS = { chapter: "章节导读", hints: "随文注释", passage: "段落深挖", chat: "对话" } as const;
 
 function PromptsSection() {
   const prompts = useSettingsStore((s) => s.prompts);
@@ -281,7 +281,7 @@ function PromptsSection() {
       ))}
       <div className="mt-2 flex justify-end gap-2">
         <button
-          onClick={() => setDraft({ chapter: "", passage: "", chat: "" })}
+          onClick={() => setDraft({ chapter: "", passage: "", chat: "", hints: "" })}
           className="rounded-lg border border-line px-3 py-1.5 text-xs text-ink-soft hover:bg-accent-soft"
         >
           恢复默认
@@ -333,6 +333,15 @@ function ContextSection() {
           onChange={(e) => void saveSettings({ autoChapterNote: e.target.checked })}
         />
         打开新章节时自动生成章节导读
+      </label>
+      <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={settings.autoChapterHints}
+          onChange={(e) => void saveSettings({ autoChapterHints: e.target.checked })}
+        />
+        打开新章节时自动生成随文注释
+        <span className="text-xs text-ink-faint">（整章送 AI，消耗较大；关闭时可在注释面板手动生成）</span>
       </label>
     </section>
   );

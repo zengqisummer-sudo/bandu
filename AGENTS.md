@@ -11,9 +11,15 @@
 
 ```bash
 npm install
-npm run dev      # Vite dev server
-npm run build    # tsc -b && vite build（提交前必须过）
+npm run dev      # Vite dev server（开发/验证用，任意端口，但绝不要占 5180）
+npm run build    # tsc -b && vite build（提交前必须过；也是"发版到用户本地稳定环境"的动作）
 ```
+
+**本地双环境约定**：`http://localhost:5180` 是用户的日常阅读源——文件夹授权、API key、
+书架数据都绑在这个 origin 上，`启动伴读.cmd`（桌面「伴读」快捷方式）在 5180 上 `vite preview`
+服务 `dist/` 稳定构建。开发迭代不影响它；功能验证通过后跑 `npm run build` 用户才会拿到新版。
+换端口 = 换 origin = 用户配置"消失"，所以 5180 永远留给用户。
+（桌面快捷方式指向 cmd.exe 而非 .cmd 本身：Smart App Control 会静默拦截双击的未签名脚本。）
 
 技术栈：Vite + React 18 + TS(strict) + Tailwind v4 + zustand + epubjs（仅解析）+ marked/DOMPurify。
 仅支持 Chromium（File System Access API、CSS Custom Highlight API）。
@@ -23,10 +29,11 @@ npm run build    # tsc -b && vite build（提交前必须过）
 ```
 src/services/storage/   存储抽象：fsa.ts（文件夹模式）/ idbStorage.ts（浏览器模式）/ paths.ts（全部逻辑路径）
 src/services/epub/      import.ts 导入；parse.ts 章节解析缓存 + 资源 blob URL
-src/services/anchor/    锚点创建/解析/模糊重定位（块序号 + 字符偏移 + 引文兜底）
-src/services/ai/        client.ts 多提供商流式；context.ts 前文窗口（防剧透裁剪）；prompts.ts 默认 prompt
-src/services/product/   markdown.ts 产物文件模板与追加写入
-src/stores/             settings（boot/模式）/ library / reader（注释/摘录/进度）/ chat / ui
+src/services/anchor/    锚点创建/解析/模糊重定位（块序号 + 字符偏移 + 引文兜底；服务于深挖/摘录）
+src/services/hints/     随文注释子系统（ANNOTATION_SPEC.md）：match.ts 匹配管线 / inject.ts DOM 注入 / parse.ts AI 输出解析
+src/services/ai/        client.ts 多提供商流式；context.ts 前文窗口（防剧透裁剪）；prompts.ts 默认 prompt + hints 输出契约
+src/services/product/   markdown.ts 产物文件模板与追加写入（含 hints 的 callout+脚注存档）
+src/stores/             settings（boot/模式）/ library / reader（注释/hints/摘录/进度）/ chat / ui
 src/pages + components/ shelf（书架+向导）/ reader（正文）/ panel（右栏三 Tab）/ settings
 ```
 
@@ -44,10 +51,22 @@ src/pages + components/ shelf（书架+向导）/ reader（正文）/ panel（�
 5. API key 只存 localStorage（`aireader.key.<provider>`），不得写入任何文件。
 6. 章节缓存里的 html 保留 epub 内原始资源路径；blob URL 跨会话无效，渲染时由
    `parse.ts:resolveResources` 现场解析。
+7. **随文注释锚定只走 `@apache-annotator/dom`**（W3C TextQuoteSelector）：任何场合禁止对
+   HTML/正文字符串做 `replace` 式注入；未匹配的 hint 必须进面板兜底列表并计入匹配率，
+   绝不静默丢弃（ANNOTATION_SPEC §5.1/§6）。
+8. **ChapterView 注入时序**：innerHTML → `numberBlocks` 编号 → hints 注入（`hintPass` 递增）
+   → 旧式高亮/角标注册（挂在 hintPass 上）。注入后绝不重跑 `numberBlocks`；注入的
+   callout/mark 元素不带 `data-para`，否则块编号漂移、旧锚点全部失效。
+9. 正文源（epub 与章节缓存的 html）只读；hints 只在渲染时合并进 DOM，磁盘上永远与正文分离。
 
 ## 已知取舍
 
 - 默认模型 `deepseek-v4-flash` 的 ID 字符串未经在线核实（编写时搜索服务不可用），设置中可改。
+- `@apache-annotator/dom@0.2.0` 的 css 模块依赖 `optimal-select`，后者 `module` 字段指向未发布的
+  `src/`——vite.config.ts 里 alias 到其 CJS 入口 `optimal-select/lib/index.js` 才能构建。
+  本应用不用其 CSS selector 功能，只用 TextQuoteSelector 匹配与 `highlightText`。
+- 随文注释的匹配率取决于模型抄写锚点的忠实度；空白/引号级出入由归一化回退兜住，
+  更大的出入进面板"未锚定"列表（数据不丢，可重新生成）。
 - Kindle/文本导入的摘录若非精确命中，锚点降级为整块（段落级）高亮。
 - 正文内链/脚注跳转被去除（自绘阅读器无处可跳）。
 - 不自动 commit；构建产物 base 为相对路径，可部署任意静态托管子路径。

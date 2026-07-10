@@ -14,11 +14,14 @@ interface UiState {
   settingsOpen: boolean;
   panelOpen: boolean;
   panelTab: PanelTab;
+  /** 随文注释是否注入正文（会话级开关，不持久化） */
+  showHints: boolean;
   toast(kind: Toast["kind"], text: string): void;
   dismissToast(id: string): void;
   openSettings(): void;
   closeSettings(): void;
   setPanel(open: boolean, tab?: PanelTab): void;
+  setShowHints(v: boolean): void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -26,6 +29,7 @@ export const useUiStore = create<UiState>((set) => ({
   settingsOpen: false,
   panelOpen: true,
   panelTab: "annos",
+  showHints: true,
   toast(kind, text) {
     const id = genId("t");
     set((s) => ({ toasts: [...s.toasts, { id, kind, text }] }));
@@ -37,6 +41,7 @@ export const useUiStore = create<UiState>((set) => ({
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false }),
   setPanel: (open, tab) => set((s) => ({ panelOpen: open, panelTab: tab ?? s.panelTab })),
+  setShowHints: (v) => set({ showHints: v }),
 }));
 
 export const toast = (kind: Toast["kind"], text: string) => useUiStore.getState().toast(kind, text);

@@ -17,10 +17,12 @@ export function SidePanel() {
   const chapter = useReaderStore((s) => s.chapter);
   const annotations = useReaderStore((s) => s.annotations);
   const excerpts = useReaderStore((s) => s.excerpts);
+  const hints = useReaderStore((s) => s.hints);
   const sessions = useChatStore((s) => s.sessions);
 
+  const hintCount = hints && hints.metadata.spine === chapter?.spine ? hints.hints.length : 0;
   const counts: Record<PanelTab, number> = {
-    annos: annotations.filter((a) => a.spine === chapter?.spine).length,
+    annos: annotations.filter((a) => a.spine === chapter?.spine).length + hintCount,
     chat: sessions.length,
     excerpts: excerpts.length,
   };
