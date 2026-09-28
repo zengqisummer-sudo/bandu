@@ -20,8 +20,16 @@ import {
   effectivePromptSet,
 } from "../services/ai/prompts";
 import { friendlyAiError, resolveAiConfig, streamChat } from "../services/ai/client";
+import { logAiExchange } from "../services/ai/log";
 import { parseHintsOutput } from "../services/hints/parse";
-import { appendAnnotationMd, appendExcerptMd, appendHintsMd } from "../services/product/markdown";
+import {
+  appendAnnotationMd,
+  appendExcerptMd,
+  appendHintsMd,
+  updateAnnotationMd,
+  updateExcerptTagsMd,
+} from "../services/product/markdown";
+import { recordTagUse } from "../lib/tags";
 import { locateQuote } from "../services/import/kindle";
 import { useSettingsStore } from "./settingsStore";
 import { toast } from "./uiStore";
@@ -92,6 +100,8 @@ interface ReaderState {
   /** 生成中已流出的字符数（进度显示） */
   hintsProgress: number;
   hintRender: HintRenderReport | null;
+  /** 最近一次随文注释生成失败的详情（含模型原始输出，供诊断） */
+  hintsError: { spine: number; message: string; raw: string } | null;
 
   openBook(id: string): Promise<boolean>;
   closeBook(): void;
@@ -102,10 +112,20 @@ interface ReaderState {
   generateChapterNote(force?: boolean): Promise<void>;
   generateChapterHints(auto?: boolean): Promise<void>;
   reportHintRender(report: HintRenderReport | null): void;
+  /** 手写批注：anchor 为 null 表示不锚定原文的本章批注 */
+  addManualAnnotation(anchor: Anchor | null, text: string): Promise<void>;
+  /** 编辑批注正文：应用内 JSON 为准，单向同步进 Obsidian markdown（不反向） */
+  editAnnotation(id: string, content: string): Promise<void>;
   addExcerptFromAnchor(anchor: Anchor): Promise<void>;
   importExcerptQuotes(quotes: string[], source: "kindle" | "text"): Promise<{ located: number; unlocated: number }>;
   removeAnnotation(id: string): Promise<void>;
   removeExcerpt(id: string): Promise<void>;
+  /** 批量删除摘录：JSON 整写一次；md 保留历史 */
+  removeExcerpts(ids: string[]): Promise<void>;
+  /** 更新摘录标签：JSON 整写 + 摘录.md 定点同步标签行 */
+  updateExcerptTags(id: string, tags: string[]): Promise<void>;
+  /** 批量追加标签：并入选中摘录已有标签（去重），JSON 整写一次 + 逐条同步 md 标签行 */
+  addTagsToExcerpts(ids: string[], tags: string[]): Promise<void>;
   setFocus(id: string, source: "text" | "panel"): void;
 }
 
@@ -136,8 +156,10 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       annotations: [...s.annotations, anno],
       streaming: { ...s.streaming, [anno.id]: "" },
     }));
+    const scene = anno.kind === "chapter" ? "章节导读" : "段落深挖";
+    const bookId = get().bookId;
+    let acc = "";
     try {
-      let acc = "";
       for await (const chunk of streamChat(cfg, { ...req, maxTokens: 1024 })) {
         acc += chunk;
         set((s) => ({ streaming: { ...s.streaming, [anno.id]: acc } }));
@@ -148,8 +170,18 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       await saveAnnotations();
       const book = get().book;
       if (book) await appendAnnotationMd(book, done);
+      if (bookId)
+        await logAiExchange({
+          bookId, scene, spine: anno.spine, provider: cfg.provider, model: cfg.model,
+          system: req.system, messages: req.messages, output: acc, status: "成功",
+        });
     } catch (e) {
       set((s) => ({ annotations: s.annotations.filter((a) => a.id !== anno.id) }));
+      if (bookId)
+        await logAiExchange({
+          bookId, scene, spine: anno.spine, provider: cfg.provider, model: cfg.model,
+          system: req.system, messages: req.messages, output: acc, status: `请求失败：${friendlyAiError(e)}`,
+        });
       toast("error", `注释生成失败：${friendlyAiError(e)}`);
     } finally {
       set((s) => {
@@ -191,6 +223,7 @@ export const useReaderStore = create<ReaderState>((set, get) => {
     hintsGeneratingSpine: null,
     hintsProgress: 0,
     hintRender: null,
+    hintsError: null,
 
     async openBook(id) {
       const book = await storage().readJson<BookMeta>("state", paths.book(id));
@@ -212,6 +245,7 @@ export const useReaderStore = create<ReaderState>((set, get) => {
         focus: null,
         hints: null,
         hintRender: null,
+        hintsError: null,
       });
       await get().openSpine(Math.min(progress.spine, book.spineLength - 1), progress.anchor.para);
       return true;
@@ -234,6 +268,7 @@ export const useReaderStore = create<ReaderState>((set, get) => {
         progress: defaultProgress(),
         hints: null,
         hintRender: null,
+        hintsError: null,
       });
     },
 
@@ -258,6 +293,7 @@ export const useReaderStore = create<ReaderState>((set, get) => {
           progress,
           hints: null,
           hintRender: null,
+          hintsError: null,
         });
         scheduleProgressWrite(bookId, progress);
         void get().generateChapterNote(false);
@@ -377,14 +413,17 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       const key = `${bookId}:${spine}`;
       if (hintsInflight.has(key)) return;
       hintsInflight.add(key);
-      set({ hintsGeneratingSpine: spine, hintsProgress: 0 });
+      set({ hintsGeneratingSpine: spine, hintsProgress: 0, hintsError: null });
+      let acc = "";
+      let logged = false;
+      let req: { system: string; messages: { role: "user" | "assistant"; content: string }[] } | null = null;
       try {
         // 防剧透边界 = 本章末尾（SPEC §4.3）；每条注释的锚点前边界由 prompt 约束
         const [win, full] = await Promise.all([
           beforeWindow(bookId, { spine, para: null }, settings.contextChars),
           chapterFullText(bookId, spine, settings.chapterNoteMaxChars),
         ]);
-        const req = buildChapterHintsRequest({
+        req = buildChapterHintsRequest({
           book,
           chapterLabel: chapterLabelFor(book, spine),
           readTitles: readChapterTitles(book, spine - 1),
@@ -393,12 +432,17 @@ export const useReaderStore = create<ReaderState>((set, get) => {
           truncated: full.truncated,
           promptSet: effectivePromptSet(prompts, book.contentType),
         });
-        let acc = "";
         for await (const chunk of streamChat(cfg, { ...req, maxTokens: 4096 })) {
           acc += chunk;
           set({ hintsProgress: acc.length });
         }
         const hints = parseHintsOutput(acc, { spine, file: chapter.href });
+        await logAiExchange({
+          bookId, scene: "随文注释", spine, provider: cfg.provider, model: cfg.model,
+          system: req.system, messages: req.messages, output: acc,
+          status: hints.length ? `成功，解析 ${hints.length} 条` : "解析失败：未从输出得到有效注释（见原始返回）",
+        });
+        logged = true;
         if (hints.length === 0) {
           // 落地原始输出便于排查：到底是没输出 JSON，还是字段不匹配
           console.error(
@@ -436,7 +480,15 @@ export const useReaderStore = create<ReaderState>((set, get) => {
         await appendHintsMd(book, file);
         toast("success", `已生成 ${hints.length} 条随文注释`);
       } catch (e) {
-        toast("error", `随文注释生成失败：${friendlyAiError(e)}`);
+        const message = friendlyAiError(e);
+        if (!logged && req)
+          await logAiExchange({
+            bookId, scene: "随文注释", spine, provider: cfg.provider, model: cfg.model,
+            system: req.system, messages: req.messages, output: acc, status: `请求失败：${message}`,
+          });
+        // 失败详情（含模型原始输出）进面板诊断卡片，不再只留一句 toast
+        set({ hintsError: { spine, message, raw: acc } });
+        toast("error", `随文注释生成失败：${message}`);
       } finally {
         hintsInflight.delete(key);
         set((s) => (s.hintsGeneratingSpine === spine ? { hintsGeneratingSpine: null, hintsProgress: 0 } : {}));
@@ -445,6 +497,41 @@ export const useReaderStore = create<ReaderState>((set, get) => {
 
     reportHintRender(report) {
       set({ hintRender: report });
+    },
+
+    async addManualAnnotation(anchor, text) {
+      const { book, chapter } = get();
+      const content = text.trim();
+      if (!book || !chapter || !content) return;
+      const anno: Annotation = {
+        id: genId("m"),
+        kind: "passage",
+        spine: chapter.spine,
+        anchor,
+        content,
+        source: "user",
+        createdAt: nowIso(),
+      };
+      set((s) => ({ annotations: [...s.annotations, anno] }));
+      await saveAnnotations();
+      await appendAnnotationMd(book, anno);
+      toast("success", "已保存批注");
+    },
+
+    async editAnnotation(id, content) {
+      const { book, annotations } = get();
+      const text = content.trim();
+      const old = annotations.find((a) => a.id === id);
+      if (!book || !old || !text || text === old.content) return;
+      const next: Annotation = { ...old, content: text };
+      set((s) => ({ annotations: s.annotations.map((a) => (a.id === id ? next : a)) }));
+      await saveAnnotations();
+      try {
+        await updateAnnotationMd(book, next);
+      } catch (e) {
+        console.warn("阅读注释.md 同步失败（应用内已保存）", e);
+      }
+      toast("success", "已更新批注");
     },
 
     async addExcerptFromAnchor(anchor) {
@@ -505,6 +592,58 @@ export const useReaderStore = create<ReaderState>((set, get) => {
     async removeExcerpt(id) {
       set((s) => ({ excerpts: s.excerpts.filter((e) => e.id !== id) }));
       await saveExcerpts();
+    },
+
+    async removeExcerpts(ids) {
+      if (!ids.length) return;
+      const idSet = new Set(ids);
+      set((s) => ({ excerpts: s.excerpts.filter((e) => !idSet.has(e.id)) }));
+      await saveExcerpts();
+    },
+
+    async updateExcerptTags(id, tags) {
+      const { book, excerpts } = get();
+      const old = excerpts.find((e) => e.id === id);
+      if (!book || !old) return;
+      const next: Excerpt = { ...old, tags: tags.length ? tags : undefined };
+      set((s) => ({ excerpts: s.excerpts.map((e) => (e.id === id ? next : e)) }));
+      await saveExcerpts();
+      recordTagUse(tags.filter((t) => !old.tags?.includes(t))); // 只记新增，避免重复计数
+      try {
+        await updateExcerptTagsMd(book, next);
+      } catch (e) {
+        console.warn("摘录.md 标签同步失败（应用内已保存）", e);
+      }
+    },
+
+    async addTagsToExcerpts(ids, tags) {
+      const clean = [...new Set(tags.map((t) => t.trim()).filter(Boolean))];
+      if (!ids.length || !clean.length) return;
+      const { book, excerpts } = get();
+      const idSet = new Set(ids);
+      // 逐条并入（去重），记录真正发生变化的条目用于 md 同步
+      const changed: Excerpt[] = [];
+      const nextExcerpts = excerpts.map((e) => {
+        if (!idSet.has(e.id)) return e;
+        const merged = [...(e.tags ?? [])];
+        for (const t of clean) if (!merged.includes(t)) merged.push(t);
+        if (merged.length === (e.tags?.length ?? 0)) return e; // 全是已有标签，无变化
+        const next: Excerpt = { ...e, tags: merged };
+        changed.push(next);
+        return next;
+      });
+      if (!changed.length) return;
+      set({ excerpts: nextExcerpts });
+      await saveExcerpts();
+      recordTagUse(clean);
+      if (!book) return;
+      for (const ex of changed) {
+        try {
+          await updateExcerptTagsMd(book, ex);
+        } catch (e) {
+          console.warn("摘录.md 标签同步失败（应用内已保存）", e);
+        }
+      }
     },
 
     setFocus(id, source) {

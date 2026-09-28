@@ -9,6 +9,7 @@ import { createAnchorFromRange, numberBlocks, resolveAnchor } from "../../servic
 import { resolveResources } from "../../services/epub/parse";
 import { matchHints } from "../../services/hints/match";
 import { injectHints, removeInjectedHints } from "../../services/hints/inject";
+import { applyFriendlyLayout } from "../../services/reader/friendly";
 import { noteTypeClass, noteTypeLabel } from "../../services/hints/noteTypes";
 import { Markdown } from "../common/Markdown";
 import { throttle } from "../../lib/utils";
@@ -48,18 +49,23 @@ export function ChapterView() {
   const [hintPass, setHintPass] = useState(0);
   const [popover, setPopover] = useState<PopoverState | null>(null);
   const [hintPop, setHintPop] = useState<{ hint: Hint; x: number; y: number } | null>(null);
+  /** 手写批注编辑器（选中文字 → 批注） */
+  const [noteEditor, setNoteEditor] = useState<{ anchor: Anchor; x: number; y: number } | null>(null);
 
-  // ---- 注入章节 DOM、编号块、恢复滚动位置 ----
+  // ---- 注入章节 DOM、编号块、友好排版、恢复滚动位置 ----
   useLayoutEffect(() => {
     const el = contentRef.current;
     if (!el || !chapter) return;
     el.innerHTML = chapter.html;
     blocksRef.current = numberBlocks(el);
     markersRef.current = [];
+    // 友好排版必须在 numberBlocks 之后（只插空元素，textContent 不变，块编号/锚点不受影响）
+    if (reading.friendly) applyFriendlyLayout(blocksRef.current);
     if (bookId) void resolveResources(el, bookId, chapter.href);
 
     const sc = scrollRef.current;
-    const p = useReaderStore.getState().pendingScrollPara;
+    // 切换友好排版时 pendingScrollPara 为 null，回退到当前阅读进度的段落，保持位置
+    const p = useReaderStore.getState().pendingScrollPara ?? useReaderStore.getState().progress.anchor.para;
     if (sc) {
       const target = p != null && p > 0 ? blocksRef.current[p] : null;
       sc.scrollTop = target
@@ -69,9 +75,10 @@ export function ChapterView() {
     useReaderStore.getState().clearPendingScroll();
     setPopover(null);
     setHintPop(null);
+    setNoteEditor(null);
     setDomVersion((v) => v + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chapter?.spine, chapter?.html, bookId]);
+  }, [chapter?.spine, chapter?.html, bookId, reading.friendly]);
 
   // ---- 随文注释：匹配（只读）→ 注入（改 DOM）→ hintPass++ 放行旧式高亮 ----
   // 隐藏时仍匹配（面板要匹配率与兜底列表），只是不注入。
@@ -237,9 +244,10 @@ export function ChapterView() {
     setHintPop(null);
   };
 
-  const act = (kind: "dive" | "ask" | "excerpt") => {
+  const act = (kind: "dive" | "ask" | "excerpt" | "note") => {
     if (!popover) return;
     const a = popover.anchor;
+    const { x, y } = popover;
     setPopover(null);
     window.getSelection()?.removeAllRanges();
     if (kind === "dive") {
@@ -248,6 +256,8 @@ export function ChapterView() {
     } else if (kind === "ask") {
       useChatStore.getState().newSession(a.quote);
       useUiStore.getState().setPanel(true, "chat");
+    } else if (kind === "note") {
+      setNoteEditor({ anchor: a, x, y });
     } else {
       void useReaderStore.getState().addExcerptFromAnchor(a);
     }
@@ -301,6 +311,64 @@ export function ChapterView() {
 
       {popover && <SelectionPopover x={popover.x} y={popover.y} onAct={act} />}
       {hintPop && <HintPopover hint={hintPop.hint} x={hintPop.x} y={hintPop.y} onClose={() => setHintPop(null)} />}
+      {noteEditor && (
+        <NoteEditor
+          anchor={noteEditor.anchor}
+          x={noteEditor.x}
+          y={noteEditor.y}
+          onClose={() => setNoteEditor(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** 手写批注编辑器：选中文字 → 批注 → 锚定在原文上（与 AI 深挖同一套锚点/存储/存档） */
+function NoteEditor({ anchor, x, y, onClose }: { anchor: Anchor; x: number; y: number; onClose: () => void }) {
+  const [text, setText] = useState("");
+  const width = 340;
+  const left = Math.min(Math.max(width / 2 + 12, x), window.innerWidth - width / 2 - 12);
+  const top = Math.min(Math.max(8, y + 10), window.innerHeight - 220);
+  const save = () => {
+    if (!text.trim()) return;
+    void useReaderStore.getState().addManualAnnotation(anchor, text);
+    useUiStore.getState().setPanel(true, "annos");
+    onClose();
+  };
+  return (
+    <div
+      className="fixed z-40 -translate-x-1/2 rounded-xl border border-line bg-card p-3 shadow-xl"
+      style={{ left, top, width }}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <p className="mb-2 border-l-2 border-accent pl-2 text-xs leading-relaxed text-ink-soft">
+        {anchor.quote.replace(/\s+/g, " ").slice(0, 60)}
+        {anchor.quote.length > 60 ? "…" : ""}
+      </p>
+      <textarea
+        autoFocus
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) save();
+          if (e.key === "Escape") onClose();
+        }}
+        placeholder="写下你的批注…（Ctrl+Enter 保存）"
+        rows={3}
+        className="w-full resize-y rounded-lg border border-line bg-paper p-2 text-sm text-ink outline-none focus:border-accent"
+      />
+      <div className="mt-2 flex justify-end gap-2">
+        <button onClick={onClose} className="rounded-lg px-3 py-1.5 text-xs text-ink-faint hover:text-ink">
+          取消
+        </button>
+        <button
+          onClick={save}
+          disabled={!text.trim()}
+          className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-paper hover:opacity-90 disabled:opacity-30"
+        >
+          保存批注
+        </button>
+      </div>
     </div>
   );
 }
@@ -327,7 +395,15 @@ function HintPopover({ hint, x, y, onClose }: { hint: Hint; x: number; y: number
   );
 }
 
-function SelectionPopover({ x, y, onAct }: { x: number; y: number; onAct: (k: "dive" | "ask" | "excerpt") => void }) {
+function SelectionPopover({
+  x,
+  y,
+  onAct,
+}: {
+  x: number;
+  y: number;
+  onAct: (k: "dive" | "ask" | "excerpt" | "note") => void;
+}) {
   const top = Math.max(8, y - 46);
   return (
     <div
@@ -336,6 +412,8 @@ function SelectionPopover({ x, y, onAct }: { x: number; y: number; onAct: (k: "d
       onMouseDown={(e) => e.preventDefault() /* 保持选区 */}
     >
       <PopBtn onClick={() => onAct("dive")} label="深挖" title="生成锚定在这段文字上的注释" />
+      <div className="h-5 w-px bg-line" />
+      <PopBtn onClick={() => onAct("note")} label="批注" title="手写一条批注，锚定在选中文字上" />
       <div className="h-5 w-px bg-line" />
       <PopBtn onClick={() => onAct("ask")} label="提问" title="就这段文字发起对话" />
       <div className="h-5 w-px bg-line" />

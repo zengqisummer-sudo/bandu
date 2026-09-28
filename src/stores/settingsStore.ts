@@ -26,7 +26,8 @@ export const DEFAULT_SETTINGS: Settings = {
   chapterNoteMaxChars: 12000,
   autoChapterNote: true,
   autoChapterHints: false,
-  reading: { fontSize: 18, lineHeight: 1.9, maxWidth: 720, theme: "light" },
+  logAiRequests: false,
+  reading: { fontSize: 18, lineHeight: 1.9, maxWidth: 720, theme: "light", friendly: false },
 };
 
 const EMPTY_PROMPT_SET: PromptSet = { chapter: "", passage: "", chat: "", hints: "" };

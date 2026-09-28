@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Annotation, Hint } from "../../types/models";
 import { useReaderStore } from "../../stores/readerStore";
 import { useSettingsStore } from "../../stores/settingsStore";
@@ -57,13 +57,16 @@ export function AnnotationsTab() {
       {/* 段落注释 */}
       {passages.length === 0 && !passages.some((p) => streaming[p.id] != null) ? (
         <p className="mt-4 px-1 text-center text-xs leading-relaxed text-ink-faint">
-          在正文中选中一段文字，点「深挖」
+          在正文中选中一段文字，点「深挖」或「批注」
           <br />
           注释会锚定在原文上
         </p>
       ) : (
         passages.map((a) => <PassageCard key={a.id} anno={a} streamText={streaming[a.id]} />)
       )}
+
+      {/* 手写本章批注（不锚定原文） */}
+      <ManualNoteBox />
 
       {/* 其他章节的注释 */}
       {others.length > 0 && (
@@ -80,7 +83,13 @@ export function AnnotationsTab() {
               >
                 <span className="text-ink-faint">{chapterLabelFor(book, a.spine)}</span>
                 <span className="mx-1">·</span>
-                {a.kind === "chapter" ? "章节导读" : truncate(a.anchor?.quote.replace(/\s+/g, " ") ?? "", 18)}
+                {a.kind === "chapter"
+                  ? "章节导读"
+                  : a.anchor
+                    ? truncate(a.anchor.quote.replace(/\s+/g, " "), 18)
+                    : a.source === "user"
+                      ? `我的批注：${truncate(a.content.replace(/\s+/g, " "), 12)}`
+                      : "注释"}
               </button>
             ))}
           </div>
@@ -100,6 +109,7 @@ function HintsSection() {
   const hintRender = useReaderStore((s) => s.hintRender);
   const generatingSpine = useReaderStore((s) => s.hintsGeneratingSpine);
   const progress = useReaderStore((s) => s.hintsProgress);
+  const hintsError = useReaderStore((s) => s.hintsError);
   const showHints = useUiStore((s) => s.showHints);
   const setShowHints = useUiStore((s) => s.setShowHints);
 
@@ -108,6 +118,7 @@ function HintsSection() {
   const generating = generatingSpine === spine;
   const file = hints && hints.metadata.spine === spine ? hints : null;
   const render = hintRender && hintRender.spine === spine ? hintRender : null;
+  const error = !generating && hintsError?.spine === spine ? hintsError : null;
 
   if (generating) {
     return (
@@ -126,9 +137,10 @@ function HintsSection() {
           onClick={() => void useReaderStore.getState().generateChapterHints()}
           className="mt-2 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-paper hover:opacity-90"
         >
-          生成本章随文注释
+          {error ? "重试" : "生成本章随文注释"}
         </button>
-        <p className="mt-1.5 text-[11px] text-ink-faint">整章送入 AI，按需生成，可随时重来</p>
+        {!error && <p className="mt-1.5 text-[11px] text-ink-faint">整章送入 AI，按需生成，可随时重来</p>}
+        {error && <HintsErrorDetail error={error} />}
       </div>
     );
   }
@@ -171,6 +183,8 @@ function HintsSection() {
         {file.metadata.truncated && <>；本章超长，注释仅覆盖前 {file.metadata.sourceChars} 字</>}
       </p>
 
+      {error && <HintsErrorDetail error={error} />}
+
       {missedHints.length > 0 && (
         <div className="mt-2.5 border-t border-line pt-2">
           <p className="mb-1.5 text-[11px] text-ink-faint">
@@ -193,23 +207,147 @@ function HintsSection() {
   );
 }
 
+/** 生成失败诊断：报错原因 + 模型原始输出（可展开复制，便于排查是格式问题还是别的） */
+function HintsErrorDetail({ error }: { error: { message: string; raw: string } }) {
+  return (
+    <div className="mt-2 rounded-lg bg-red-500/5 px-2.5 py-2 text-left">
+      <p className="text-[11px] leading-relaxed text-red-600">上次生成失败：{error.message}</p>
+      {error.raw.trim() && (
+        <details className="mt-1">
+          <summary className="cursor-pointer text-[11px] text-ink-faint hover:text-ink">
+            查看模型原始输出（{error.raw.length} 字）
+          </summary>
+          <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-paper p-2 text-[11px] leading-relaxed text-ink-soft">
+            {error.raw}
+          </pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
+/** 手写本章批注入口（不锚定原文；锚定的批注走正文选中 → 「批注」） */
+function ManualNoteBox() {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="mt-3 rounded-xl border border-dashed border-line px-3 py-2 text-xs text-ink-faint hover:border-ink-faint hover:text-ink"
+      >
+        ＋ 手写一条本章批注
+      </button>
+    );
+  }
+  const save = () => {
+    if (!text.trim()) return;
+    void useReaderStore.getState().addManualAnnotation(null, text);
+    setText("");
+    setOpen(false);
+  };
+  return (
+    <div className="mt-3 rounded-xl border border-line p-3">
+      <p className="mb-1.5 text-[11px] text-ink-faint">本章批注（想锚定在某段文字上？在正文选中后点「批注」）</p>
+      <textarea
+        autoFocus
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) save();
+          if (e.key === "Escape") setOpen(false);
+        }}
+        placeholder="写下你的想法…（Ctrl+Enter 保存）"
+        rows={3}
+        className="w-full resize-y rounded-lg border border-line bg-paper p-2 text-sm text-ink outline-none focus:border-accent"
+      />
+      <div className="mt-2 flex justify-end gap-2">
+        <button onClick={() => setOpen(false)} className="rounded-lg px-3 py-1.5 text-xs text-ink-faint hover:text-ink">
+          取消
+        </button>
+        <button
+          onClick={save}
+          disabled={!text.trim()}
+          className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-paper hover:opacity-90 disabled:opacity-30"
+        >
+          保存
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** 批注就地编辑器：改动落应用内 JSON（准绳），并单向同步进 Obsidian */
+function AnnoEditor({ anno, onDone }: { anno: Annotation; onDone: () => void }) {
+  const [text, setText] = useState(anno.content);
+  const save = () => {
+    void useReaderStore.getState().editAnnotation(anno.id, text);
+    onDone();
+  };
+  return (
+    <div onClick={(e) => e.stopPropagation()}>
+      <textarea
+        autoFocus
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) save();
+          if (e.key === "Escape") onDone();
+        }}
+        rows={5}
+        className="w-full resize-y rounded-lg border border-line bg-paper p-2 text-sm text-ink outline-none focus:border-accent"
+      />
+      <div className="mt-2 flex items-center justify-between">
+        <span className="text-[11px] text-ink-faint">改动会同步到 Obsidian（Ctrl+Enter 保存）</span>
+        <div className="flex gap-2">
+          <button onClick={onDone} className="rounded-lg px-3 py-1.5 text-xs text-ink-faint hover:text-ink">
+            取消
+          </button>
+          <button
+            onClick={save}
+            disabled={!text.trim()}
+            className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-paper hover:opacity-90 disabled:opacity-30"
+          >
+            保存
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function NoteCard({ anno, streamText }: { anno: Annotation; streamText?: string }) {
   const isStreaming = streamText != null;
+  const [editing, setEditing] = useState(false);
   return (
     <div className="mb-3 rounded-xl border border-line bg-accent-soft/50 p-4">
       <div className="mb-2 flex items-center justify-between">
         <span className="text-xs font-semibold tracking-wide text-accent">▧ 本章导读</span>
-        {!isStreaming && (
-          <button
-            onClick={() => void useReaderStore.getState().generateChapterNote(true)}
-            className="text-xs text-ink-faint hover:text-ink"
-            title="重新生成（旧版本保留在 markdown 中）"
-          >
-            重新生成
-          </button>
+        {!isStreaming && !editing && (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setEditing(true)}
+              className="text-xs text-ink-faint hover:text-ink"
+              title="编辑导读（改动单向同步到 Obsidian）"
+            >
+              编辑
+            </button>
+            <button
+              onClick={() => void useReaderStore.getState().generateChapterNote(true)}
+              className="text-xs text-ink-faint hover:text-ink"
+              title="重新生成（旧版本保留在 markdown 中）"
+            >
+              重新生成
+            </button>
+          </div>
         )}
       </div>
-      <Markdown text={isStreaming ? streamText : anno.content} streaming={isStreaming} />
+      {editing ? (
+        <AnnoEditor anno={anno} onDone={() => setEditing(false)} />
+      ) : (
+        <Markdown text={isStreaming ? streamText : anno.content} streaming={isStreaming} />
+      )}
     </div>
   );
 }
@@ -219,6 +357,7 @@ function PassageCard({ anno, streamText }: { anno: Annotation; streamText?: stri
   const ref = useRef<HTMLDivElement>(null);
   const isStreaming = streamText != null;
   const focused = focus?.id === anno.id;
+  const [editing, setEditing] = useState(false);
 
   useEffect(() => {
     if (focused && focus?.source === "text") {
@@ -230,19 +369,36 @@ function PassageCard({ anno, streamText }: { anno: Annotation; streamText?: stri
   return (
     <div
       ref={ref}
-      onClick={() => useReaderStore.getState().setFocus(anno.id, "panel")}
-      className={`mb-2.5 cursor-pointer rounded-xl border p-3.5 transition-colors ${
+      onClick={() => !editing && useReaderStore.getState().setFocus(anno.id, "panel")}
+      className={`mb-2.5 rounded-xl border p-3.5 transition-colors ${editing ? "cursor-default" : "cursor-pointer"} ${
         focused ? "border-accent bg-accent-soft/40" : "border-line hover:border-ink-faint"
       }`}
     >
+      {anno.source === "user" && (
+        <p className="mb-1.5 text-[11px] font-medium tracking-wide text-accent">✎ 我的批注</p>
+      )}
       {anno.anchor && (
         <p className="mb-2 border-l-2 border-accent pl-2 text-xs leading-relaxed text-ink-soft">
           {truncate(anno.anchor.quote.replace(/\s+/g, " "), 60)}
         </p>
       )}
-      <Markdown text={isStreaming ? streamText : anno.content} streaming={isStreaming} />
-      {!isStreaming && (
-        <div className="mt-2 flex justify-end">
+      {editing ? (
+        <AnnoEditor anno={anno} onDone={() => setEditing(false)} />
+      ) : (
+        <Markdown text={isStreaming ? streamText : anno.content} streaming={isStreaming} />
+      )}
+      {!isStreaming && !editing && (
+        <div className="mt-2 flex justify-end gap-3">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setEditing(true);
+            }}
+            className="text-xs text-ink-faint hover:text-ink"
+            title="编辑批注（改动单向同步到 Obsidian）"
+          >
+            编辑
+          </button>
           <button
             onClick={(e) => {
               e.stopPropagation();

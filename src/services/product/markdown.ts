@@ -3,6 +3,7 @@ import { storage } from "../storage";
 import { paths } from "../storage/paths";
 import { chapterLabelFor } from "../ai/context";
 import { calloutTag, noteTypeLabel } from "../hints/noteTypes";
+import { isTagLine, tagLine } from "../../lib/tags";
 import { dateStr, truncate } from "../../lib/utils";
 
 // 产物 markdown 模板与写入（SPEC §1.4 / §1.5）。
@@ -34,21 +35,54 @@ function quoteBlock(text: string): string {
 
 export async function appendAnnotationMd(book: BookMeta, anno: Annotation): Promise<void> {
   const label = chapterLabelFor(book, anno.spine);
+  const quotePart = anno.anchor ? ` · 「${truncate(anno.anchor.quote.replace(/\s+/g, " "), 14)}」` : "";
   const heading =
     anno.kind === "chapter"
       ? `## ${label} · 章节导读`
-      : `## ${label} · 「${truncate(anno.anchor?.quote.replace(/\s+/g, " ") ?? "", 14)}」`;
+      : anno.source === "user"
+        ? `## ${label} · 我的批注${quotePart}`
+        : `## ${label}${quotePart}`;
   const meta = metaComment("ai-anno", {
     id: anno.id,
     kind: anno.kind,
     spine: anno.spine,
     para: anno.anchor?.para,
+    source: anno.source ?? "ai",
     t: anno.createdAt,
   });
   const parts = ["---", "", heading, meta, ""];
   if (anno.kind === "passage" && anno.anchor) parts.push(quoteBlock(anno.anchor.quote), "");
   parts.push(anno.content.trim());
   await storage().appendMarkdown(paths.productNotes(book.productDir), parts.join("\n"), frontmatter(book, "阅读注释"));
+}
+
+/**
+ * 批注内容变更单向同步进 阅读注释.md（伴读 → Obsidian，永不反向）：
+ * 定位该条的 ai-anno 元数据行，只重写它名下的正文段（标题/元数据/引文块保持不动），
+ * 块尾以下一条「--- + 空行 + ## 标题」为界。找不到该条（历史文件被手动整理过、
+ * 或读者只在 Obsidian 里改过）则静默放弃，应用内 JSON 始终是准绳。
+ */
+export async function updateAnnotationMd(book: BookMeta, anno: Annotation): Promise<boolean> {
+  const marker = `<!-- ai-anno `;
+  const idToken = `"id":${JSON.stringify(anno.id)}`;
+  return storage().rewriteMarkdown(paths.productNotes(book.productDir), (text) => {
+    const lines = text.split("\n");
+    const at = lines.findIndex((l) => l.startsWith(marker) && l.includes(idToken));
+    if (at < 0) return null;
+    // 下一块起点：独立的 "---" 后紧跟空行与 "## 标题"（避免把正文里的 --- 误判为块界）
+    const isBlockSep = (i: number) =>
+      lines[i] === "---" && lines[i + 1] === "" && (lines[i + 2]?.startsWith("## ") ?? false);
+    let end = at + 1;
+    while (end < lines.length && !isBlockSep(end)) end++;
+    const head = lines.slice(0, at + 1); // 含标题与元数据行
+    const body: string[] = [""];
+    if (anno.kind === "passage" && anno.anchor) body.push(quoteBlock(anno.anchor.quote), "");
+    body.push(anno.content.trim());
+    const tail = lines.slice(end); // 从下一块的 "---" 开始；末块时为空
+    const next = (tail.length ? [...head, ...body, "", ...tail] : [...head, ...body]).join("\n");
+    if (next === text) return text;
+    return text.endsWith("\n") && !next.endsWith("\n") ? next + "\n" : next;
+  });
 }
 
 /**
@@ -94,9 +128,33 @@ export async function appendExcerptMd(book: BookMeta, ex: Excerpt): Promise<void
   const label = ex.spine >= 0 ? chapterLabelFor(book, ex.spine) : "未定位";
   const sourceLabel = ex.source === "kindle" ? " · Kindle 导入" : ex.source === "text" ? " · 文本导入" : "";
   const meta = metaComment("ai-excerpt", { id: ex.id, spine: ex.spine, t: ex.createdAt });
-  const parts = ["---", "", quoteBlock(ex.quote), meta, "", `— ${label}${sourceLabel}`];
+  // 标签行紧跟摘录文字块（meta 注释在 Obsidian 预览中不可见）
+  const parts = ["---", "", quoteBlock(ex.quote), meta];
+  if (ex.tags?.length) parts.push(tagLine(ex.tags));
+  parts.push("", `— ${label}${sourceLabel}`);
   if (ex.note?.trim()) parts.push("", ex.note.trim());
   await storage().appendMarkdown(paths.productExcerpts(book.productDir), parts.join("\n"), frontmatter(book, "摘录"));
+}
+
+/**
+ * 摘录标签变更同步进 摘录.md：定位该条的 ai-excerpt 元数据行，
+ * 增/换/删紧随其后的标签行——只动这一行（storage.rewriteMarkdown 例外通道）。
+ * 找不到该条（历史文件被手动整理过等）则静默放弃，应用内 JSON 仍是准绳。
+ */
+export async function updateExcerptTagsMd(book: BookMeta, ex: Excerpt): Promise<boolean> {
+  const marker = `<!-- ai-excerpt `;
+  const idToken = `"id":${JSON.stringify(ex.id)}`;
+  return storage().rewriteMarkdown(paths.productExcerpts(book.productDir), (text) => {
+    const lines = text.split("\n");
+    const at = lines.findIndex((l) => l.startsWith(marker) && l.includes(idToken));
+    if (at < 0) return null;
+    const hasOld = at + 1 < lines.length && isTagLine(lines[at + 1]);
+    const next = [...lines];
+    if (ex.tags?.length) next.splice(at + 1, hasOld ? 1 : 0, tagLine(ex.tags));
+    else if (hasOld) next.splice(at + 1, 1);
+    else return text; // 无旧无新，无事可做
+    return next.join("\n");
+  });
 }
 
 function sessionHeader(book: BookMeta, session: ChatSession): string {

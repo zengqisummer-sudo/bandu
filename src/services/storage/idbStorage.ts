@@ -34,10 +34,28 @@ export class IdbProvider implements StorageProvider {
   }
 
   async appendMarkdown(path: string, block: string, frontmatterIfNew: string): Promise<void> {
-    const k = key("product", path);
+    await this.appendInto("product", path, block, frontmatterIfNew);
+  }
+
+  async appendStateMarkdown(path: string, block: string, frontmatterIfNew: string): Promise<void> {
+    await this.appendInto("state", path, block, frontmatterIfNew);
+  }
+
+  private async appendInto(area: Area, path: string, block: string, frontmatterIfNew: string): Promise<void> {
+    const k = key(area, path);
     const existing = await idbGet<string>("files", k);
     const next = existing == null ? `${frontmatterIfNew}\n${block}\n` : `${existing}\n${block}\n`;
     await idbSet("files", k, next);
+  }
+
+  async rewriteMarkdown(path: string, transform: (text: string) => string | null): Promise<boolean> {
+    const k = key("product", path);
+    const existing = await idbGet<string>("files", k);
+    if (existing == null) return false;
+    const next = transform(existing);
+    if (next == null || next === existing) return next != null;
+    await idbSet("files", k, next);
+    return true;
   }
 
   async deleteStateDir(prefix: string): Promise<void> {

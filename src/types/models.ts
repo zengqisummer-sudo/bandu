@@ -15,6 +15,8 @@ export interface ReadingPrefs {
   lineHeight: number;
   maxWidth: number;
   theme: "light" | "dark";
+  /** 友好阅读模式：长段按句拆行 + 分割线标示原书分段（纯渲染层，见 services/reader/friendly.ts） */
+  friendly: boolean;
 }
 
 export interface Settings {
@@ -25,6 +27,8 @@ export interface Settings {
   autoChapterNote: boolean;
   /** 打开新章节时自动生成随文注释（整章送 AI，费用较高，默认关） */
   autoChapterHints: boolean;
+  /** 调试：把每次请求大模型的 prompt 与返回写入运行状态文件夹（一本书一份 md，默认关） */
+  logAiRequests: boolean;
   reading: ReadingPrefs;
 }
 
@@ -88,6 +92,8 @@ export interface Annotation {
   spine: number;
   anchor: Anchor | null; // chapter 级为 null
   content: string;
+  /** 注释来源：缺省（历史数据）视为 AI；"user" 为读者手写批注 */
+  source?: "ai" | "user";
   createdAt: string;
 }
 
@@ -125,6 +131,8 @@ export interface Excerpt {
   anchor: Anchor | null;
   quote: string;
   note?: string;
+  /** 用户手动标签（Obsidian 语法，不带 #；/ 分层） */
+  tags?: string[];
   source: ExcerptSource;
   createdAt: string;
 }

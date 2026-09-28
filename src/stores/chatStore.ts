@@ -5,6 +5,7 @@ import { paths } from "../services/storage/paths";
 import { beforeWindow, chapterLabelFor } from "../services/ai/context";
 import { buildChatSystem, effectivePromptSet } from "../services/ai/prompts";
 import { friendlyAiError, resolveAiConfig, streamChat } from "../services/ai/client";
+import { logAiExchange } from "../services/ai/log";
 import { appendChatTurnsMd } from "../services/product/markdown";
 import { useReaderStore } from "./readerStore";
 import { useSettingsStore } from "./settingsStore";
@@ -134,9 +135,12 @@ export const useChatStore = create<ChatState>((set, get) => {
       }));
       await persist();
 
+      const { progress } = useReaderStore.getState();
+      let logSystem = "";
+      let logHistory: { role: "user" | "assistant"; content: string }[] = [];
+      let acc = "";
       try {
         // 对话上下文边界 = 当前阅读位置（SPEC §4.3）：含当前段在内的之前文本
-        const { progress } = useReaderStore.getState();
         const win = await beforeWindow(
           reader.bookId,
           { spine: progress.spine, para: progress.anchor.para + 1, offset: 0 },
@@ -152,9 +156,10 @@ export const useChatStore = create<ChatState>((set, get) => {
           promptSet: effectivePromptSet(settingsState.prompts, book.contentType),
         });
         const history = cur.turns.slice(-MAX_HISTORY_TURNS).map((t) => ({ role: t.role, content: t.content }));
+        logSystem = system;
+        logHistory = history;
 
         abortCtrl = new AbortController();
-        let acc = "";
         for await (const chunk of streamChat(cfg, {
           system,
           messages: history,
@@ -188,6 +193,10 @@ export const useChatStore = create<ChatState>((set, get) => {
           toast("error", "对话已完成，但写入 markdown 失败（内容仍在应用内）");
         }
         await persist();
+        await logAiExchange({
+          bookId: reader.bookId, scene: "对话", spine: progress.spine, provider: cfg.provider, model: cfg.model,
+          system: logSystem, messages: logHistory, output: acc, status: "成功",
+        });
         return true;
       } catch (e) {
         // 失败：撤回本轮用户消息，文字由输入框恢复
@@ -198,7 +207,14 @@ export const useChatStore = create<ChatState>((set, get) => {
           draft: null,
         }));
         await persist();
-        if (!(e instanceof DOMException && e.name === "AbortError")) {
+        const aborted = e instanceof DOMException && e.name === "AbortError";
+        if (logSystem)
+          await logAiExchange({
+            bookId: reader.bookId, scene: "对话", spine: progress.spine, provider: cfg.provider, model: cfg.model,
+            system: logSystem, messages: logHistory, output: acc,
+            status: aborted ? "已取消（用户中止）" : `请求失败：${friendlyAiError(e)}`,
+          });
+        if (!aborted) {
           toast("error", `对话失败：${friendlyAiError(e)}`);
         }
         return false;

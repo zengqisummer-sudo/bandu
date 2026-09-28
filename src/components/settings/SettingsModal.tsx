@@ -343,6 +343,20 @@ function ContextSection() {
         打开新章节时自动生成随文注释
         <span className="text-xs text-ink-faint">（整章送 AI，消耗较大；关闭时可在注释面板手动生成）</span>
       </label>
+      <label className="mt-2 flex cursor-pointer items-start gap-2 text-sm">
+        <input
+          type="checkbox"
+          className="mt-1"
+          checked={settings.logAiRequests}
+          onChange={(e) => void saveSettings({ logAiRequests: e.target.checked })}
+        />
+        <span>
+          是否打印请求 AI 的日志
+          <span className="block text-xs text-ink-faint">
+            开启后，每次请求大模型的 prompt 与返回都会追加写入运行状态文件夹，一本书一份（books/&lt;书&gt;/ai-请求日志.md），方便调 prompt、排查解析失败。默认关闭。
+          </span>
+        </span>
+      </label>
     </section>
   );
 }

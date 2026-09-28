@@ -5,3 +5,8 @@ dist/
 Thumbs.db
 *.log
 .claude/launch.json
+
+# 工作区记忆 / 沙盒挂载测试产物 / 备份文件
+.workbuddy/
+.mount_integrity_test.txt
+*.bak

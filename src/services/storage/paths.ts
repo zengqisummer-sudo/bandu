@@ -14,6 +14,8 @@ export const paths = {
   hints: (id: string, spine: number) => `books/${id}/hints/${String(spine).padStart(4, "0")}.json`,
   chapterCache: (id: string, spine: number) =>
     `books/${id}/cache/chapters/${String(spine).padStart(4, "0")}.json`,
+  /** 调试用：每本书一份 AI 请求日志（运行状态区，markdown） */
+  aiLog: (id: string) => `books/${id}/ai-请求日志.md`,
   // 产物区（相对产物根）
   productNotes: (dir: string) => `${dir}/注释.md`,
   productChats: (dir: string) => `${dir}/对话.md`,

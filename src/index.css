@@ -94,6 +94,25 @@ body {
 }
 .chapter-content li { margin: 0.3em 0; }
 
+/* ---- 友好阅读模式（services/reader/friendly.ts 注入的空元素，不含文字） ---- */
+.chapter-content .fr-gap {
+  display: block;
+  height: 0.6em;
+}
+/* 拆行后的段落取消首行缩进（每个拆出的行都会缩进，观感杂乱） */
+.chapter-content p:has(.fr-gap),
+.chapter-content div[data-para]:has(.fr-gap),
+.chapter-content blockquote:has(.fr-gap) {
+  text-indent: 0;
+}
+/* 原书分段标示线：居中短虚线，只出现在发生过拆行的段落边界 */
+.chapter-content .fr-divider {
+  display: block;
+  width: 38%;
+  margin: 1.5em auto;
+  border-top: 1px dashed var(--line);
+}
+
 /* 注释/摘录高亮（CSS Custom Highlight API） */
 ::highlight(anno) {
   text-decoration: underline dotted 1.5px var(--accent);

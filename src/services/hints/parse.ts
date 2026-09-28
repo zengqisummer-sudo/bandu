@@ -15,9 +15,22 @@ function rand4(): string {
   return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 }
 
-/** 去掉 markdown 代码围栏行（模型偶尔无视"不要围栏"的指令） */
+/** 去掉 markdown 代码围栏行（模型偶尔无视"不要围栏"的指令）与推理模型内联的 <think> 块 */
 function stripFences(s: string): string {
-  return s.replace(/^\s*```[a-zA-Z]*\s*$/gm, "");
+  return s.replace(/<think>[\s\S]*?<\/think>/g, "").replace(/^\s*```[a-zA-Z]*\s*$/gm, "");
+}
+
+// 字段别名兜底：契约要求 target.exact + text，但模型常自作主张换字段名/拍平结构。
+// 解析层尽量收编，别让整批注释因命名分歧作废（失败原文另有诊断展示）。
+const TEXT_KEYS = ["text", "note", "content", "comment", "annotation", "explanation"];
+const EXACT_KEYS = ["exact", "anchor_text", "anchorText", "quote", "phrase", "span", "target_text", "anchor"];
+
+function pickString(o: Record<string, unknown>, keys: string[]): string {
+  for (const k of keys) {
+    const v = o[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return "";
 }
 
 /** 顶层（深度 1）对象逐个提取，字符串感知，截断的尾对象自然丢弃 */
@@ -76,9 +89,12 @@ function coerce(item: unknown, index: number, ctx: { spine: number; file: string
   const o = item as Record<string, unknown>;
   const t = (typeof o.target === "object" && o.target !== null ? o.target : {}) as Record<string, unknown>;
 
-  const exact = typeof t.exact === "string" ? t.exact.trim() : "";
-  const text = typeof o.text === "string" ? o.text.trim() : "";
-  if (!exact || exact.length > 300 || !text) return null;
+  // 锚点原文：target.exact → target 内别名 → target 本身是字符串 → 顶层拍平/别名
+  const targetStr = typeof o.target === "string" ? o.target.trim() : "";
+  const exact = pickString(t, EXACT_KEYS) || targetStr || pickString(o, EXACT_KEYS);
+  // 注释正文：text → 顶层别名 → target 内误放
+  const text = pickString(o, TEXT_KEYS) || pickString(t, TEXT_KEYS);
+  if (!exact || exact.length > 300 || !text || text === exact) return null;
 
   const note_type =
     typeof o.note_type === "string" && o.note_type.trim() ? o.note_type.trim().toLowerCase() : "direction";
@@ -91,8 +107,10 @@ function coerce(item: unknown, index: number, ctx: { spine: number; file: string
   const placement: HintPlacement =
     o.placement === "before" || o.placement === "after" ? o.placement : kind === "block" ? "before" : "after";
 
-  const prefix = typeof t.prefix === "string" && t.prefix.trim() ? t.prefix.slice(-60) : undefined;
-  const suffix = typeof t.suffix === "string" && t.suffix.trim() ? t.suffix.slice(0, 60) : undefined;
+  const rawPrefix = typeof t.prefix === "string" ? t.prefix : typeof o.prefix === "string" ? o.prefix : "";
+  const rawSuffix = typeof t.suffix === "string" ? t.suffix : typeof o.suffix === "string" ? o.suffix : "";
+  const prefix = rawPrefix.trim() ? rawPrefix.slice(-60) : undefined;
+  const suffix = rawSuffix.trim() ? rawSuffix.slice(0, 60) : undefined;
   const occRaw = Number(t.occurrence);
   const occurrence = Number.isInteger(occRaw) && occRaw >= 1 ? occRaw : undefined;
 

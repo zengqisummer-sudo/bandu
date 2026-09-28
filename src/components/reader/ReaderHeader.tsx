@@ -111,6 +111,25 @@ function PrefsButton() {
             onInc={() => patch({ maxWidth: Math.min(1000, reading.maxWidth + 40) })}
           />
           <div className="mt-3 flex items-center justify-between">
+            <span className="text-xs text-ink-soft" title="长段按句拆行，分割线标示原书分段；不改动书的内容">
+              友好排版
+            </span>
+            <div className="flex gap-1">
+              <button
+                onClick={() => patch({ friendly: true })}
+                className={`rounded-md border px-2.5 py-1 text-xs ${reading.friendly ? "border-accent bg-accent-soft" : "border-line"}`}
+              >
+                开
+              </button>
+              <button
+                onClick={() => patch({ friendly: false })}
+                className={`rounded-md border px-2.5 py-1 text-xs ${!reading.friendly ? "border-accent bg-accent-soft" : "border-line"}`}
+              >
+                关
+              </button>
+            </div>
+          </div>
+          <div className="mt-3 flex items-center justify-between">
             <span className="text-xs text-ink-soft">主题</span>
             <div className="flex gap-1">
               <button

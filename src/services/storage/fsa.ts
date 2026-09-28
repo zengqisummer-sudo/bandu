@@ -86,14 +86,28 @@ export class FsaProvider implements StorageProvider {
   }
 
   /**
-   * 产物区唯一写入口：keepExistingData + 末尾定位写，不触碰既有字节，
+   * 产物区常规写入口：keepExistingData + 末尾定位写，不触碰既有字节，
    * 用户在 Obsidian 中的手动编辑绝不会被覆盖（SPEC §1.5-1）。
    */
   async appendMarkdown(path: string, block: string, frontmatterIfNew: string): Promise<void> {
-    const existing = await getFileHandle(this.productRoot, path, false);
+    await this.appendInto(this.productRoot, path, block, frontmatterIfNew);
+  }
+
+  /** 状态区追加（调试日志）：与 appendMarkdown 同策略，仅根目录不同 */
+  async appendStateMarkdown(path: string, block: string, frontmatterIfNew: string): Promise<void> {
+    await this.appendInto(this.stateRoot, path, block, frontmatterIfNew);
+  }
+
+  private async appendInto(
+    root: FileSystemDirectoryHandle,
+    path: string,
+    block: string,
+    frontmatterIfNew: string
+  ): Promise<void> {
+    const existing = await getFileHandle(root, path, false);
     if (!existing) {
-      const h = await getFileHandle(this.productRoot, path, true);
-      if (!h) throw new Error(`无法创建产物文件: ${path}`);
+      const h = await getFileHandle(root, path, true);
+      if (!h) throw new Error(`无法创建文件: ${path}`);
       await writeWhole(h, `${frontmatterIfNew}\n${block}\n`);
       return;
     }
@@ -102,6 +116,20 @@ export class FsaProvider implements StorageProvider {
     const w = await existing.createWritable({ keepExistingData: true });
     await w.write({ type: "write", position: size, data: `\n${block}\n` });
     await w.close();
+  }
+
+  /**
+   * 产物区唯一的改写例外（provider.ts 注释）：读最新内容 → transform 定点改行 → 整写。
+   * 紧贴写入时刻重新读文件，把覆盖用户 Obsidian 并发编辑的窗口压到毫秒级。
+   */
+  async rewriteMarkdown(path: string, transform: (text: string) => string | null): Promise<boolean> {
+    const h = await getFileHandle(this.productRoot, path, false);
+    if (!h) return false;
+    const text = await (await h.getFile()).text();
+    const next = transform(text);
+    if (next == null || next === text) return next != null;
+    await writeWhole(h, next);
+    return true;
   }
 
   async deleteStateDir(prefix: string): Promise<void> {
