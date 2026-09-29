@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { ChatSession, ChatTurn, ConversationsFile } from "../types/models";
+import type { Anchor, ChatSession, ChatTurn, ConversationsFile } from "../types/models";
 import { storage } from "../services/storage";
 import { paths } from "../services/storage/paths";
 import { beforeWindow, chapterLabelFor } from "../services/ai/context";
@@ -15,6 +15,7 @@ import { genId, nowIso, truncate } from "../lib/utils";
 const MAX_HISTORY_TURNS = 20; // 超长会话只带最近轮次（SPEC §4.3）
 
 let abortCtrl: AbortController | null = null;
+let chatEpoch = 0;
 
 interface ChatState {
   bookId: string | null;
@@ -22,10 +23,11 @@ interface ChatState {
   lastWrittenSession?: string;
   activeId: string | null;
   pending: boolean;
+  sendingId: string | null;
   draft: string | null; // 流式中的 AI 回复
   load(bookId: string): Promise<void>;
   reset(): void;
-  newSession(quote?: string): string;
+  newSession(quote?: string, anchor?: Anchor): string;
   select(id: string): void;
   rename(id: string, title: string): Promise<void>;
   deleteSession(id: string): Promise<void>;
@@ -47,11 +49,16 @@ export const useChatStore = create<ChatState>((set, get) => {
     lastWrittenSession: undefined,
     activeId: null,
     pending: false,
+    sendingId: null,
     draft: null,
 
     async load(bookId) {
+      const epoch = ++chatEpoch;
+      abortCtrl?.abort();
       const file = await storage().readJson<ConversationsFile>("state", paths.conversations(bookId));
+      if (epoch !== chatEpoch) return;
       set({
+        sendingId: null,
         bookId,
         sessions: file?.sessions ?? [],
         lastWrittenSession: file?.lastWrittenSession,
@@ -62,22 +69,24 @@ export const useChatStore = create<ChatState>((set, get) => {
     },
 
     reset() {
+      ++chatEpoch;
       abortCtrl?.abort();
-      set({ bookId: null, sessions: [], activeId: null, pending: false, draft: null, lastWrittenSession: undefined });
+      set({ bookId: null, sessions: [], activeId: null, pending: false, sendingId: null, draft: null, lastWrittenSession: undefined });
     },
 
-    newSession(quote) {
+    newSession(quote, anchor) {
       const { progress } = useReaderStore.getState();
       const session: ChatSession = {
         id: genId("s"),
         title: "新对话",
         createdAt: nowIso(),
-        context: { spine: progress.spine, percent: progress.percent, quote },
+        anchor,
+        context: { spine: useReaderStore.getState().chapter?.spine ?? progress.spine, percent: progress.percent, quote },
         turns: [],
         lastSavedTurn: 0,
       };
       set((s) => ({ sessions: [...s.sessions, session], activeId: session.id }));
-      void persist();
+      void persist().catch(() => toast("error", "想法卡保存失败，请重试"));
       return session.id;
     },
 
@@ -121,35 +130,38 @@ export const useChatStore = create<ChatState>((set, get) => {
         session = get().sessions.find((x) => x.id === id)!;
       }
       const sessionId = session.id;
+      const epoch = chatEpoch;
 
       // 首条消息自动作为会话标题
       if (session.turns.length === 0 && session.title === "新对话") {
-        await get().rename(sessionId, truncate(content.replace(/\s+/g, " "), 16));
+        set(s => ({ sessions: s.sessions.map(x => x.id === sessionId ? { ...x, title: truncate(content.replace(/\s+/g, " "), 16) } : x) }));
       }
 
       const userTurn: ChatTurn = { role: "user", content, t: nowIso() };
       set((s) => ({
         sessions: s.sessions.map((x) => (x.id === sessionId ? { ...x, turns: [...x.turns, userTurn] } : x)),
         pending: true,
+        sendingId: sessionId,
         draft: "",
       }));
-      await persist();
-
       const { progress } = useReaderStore.getState();
       let logSystem = "";
       let logHistory: { role: "user" | "assistant"; content: string }[] = [];
       let acc = "";
       try {
+        await persist();
+        if (epoch !== chatEpoch) return false;
         // 对话上下文边界 = 当前阅读位置（SPEC §4.3）：含当前段在内的之前文本
         const win = await beforeWindow(
           reader.bookId,
-          { spine: progress.spine, para: progress.anchor.para + 1, offset: 0 },
+          session.anchor ? { spine: session.context.spine, para: session.anchor.endPara, offset: session.anchor.end } : { spine: progress.spine, para: progress.anchor.para + 1, offset: 0 },
           settingsState.settings.contextChars
         );
+        if (epoch !== chatEpoch) return false;
         const cur = get().sessions.find((x) => x.id === sessionId)!;
         const system = buildChatSystem({
           book,
-          chapterLabel: chapterLabelFor(book, progress.spine),
+          chapterLabel: chapterLabelFor(book, session.anchor ? session.context.spine : progress.spine),
           percent: progress.percent,
           beforeWindow: win,
           sessionQuote: cur.context.quote,
@@ -166,9 +178,11 @@ export const useChatStore = create<ChatState>((set, get) => {
           maxTokens: 2048,
           signal: abortCtrl.signal,
         })) {
+          if (epoch !== chatEpoch) return false;
           acc += chunk;
           set({ draft: acc });
         }
+        if (epoch !== chatEpoch) return false;
         if (!acc.trim()) throw new Error("模型没有返回内容");
 
         const aiTurn: ChatTurn = { role: "assistant", content: acc.trim(), t: nowIso() };
@@ -184,6 +198,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         const newTurns = done.turns.slice(done.lastSavedTurn);
         try {
           await appendChatTurnsMd(book, done, newTurns, header);
+          if (epoch !== chatEpoch) return false;
           set((s) => ({
             sessions: s.sessions.map((x) => (x.id === sessionId ? { ...x, lastSavedTurn: x.turns.length } : x)),
             lastWrittenSession: sessionId,
@@ -199,6 +214,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         });
         return true;
       } catch (e) {
+        if (epoch !== chatEpoch) return false;
         // 失败：撤回本轮用户消息，文字由输入框恢复
         set((s) => ({
           sessions: s.sessions.map((x) =>
@@ -206,7 +222,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           ),
           draft: null,
         }));
-        await persist();
+        await persist().catch(() => toast("error", "会话状态写入失败，请检查存储权限"));
         const aborted = e instanceof DOMException && e.name === "AbortError";
         if (logSystem)
           await logAiExchange({
@@ -219,8 +235,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         }
         return false;
       } finally {
-        abortCtrl = null;
-        set({ pending: false });
+        if (epoch === chatEpoch) { abortCtrl = null; set({ pending: false, sendingId: null }); }
       }
     },
 

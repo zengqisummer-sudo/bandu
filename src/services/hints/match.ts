@@ -243,15 +243,21 @@ async function matchOne(scope: HTMLElement, hint: Hint, getDoc: () => Normalized
  * 只读匹配：不改动 DOM，可在任意时刻安全执行。
  * 注入（会改 DOM）由 inject.ts 在全部匹配完成后统一进行。
  */
-export async function matchHints(scope: HTMLElement, hints: Hint[]): Promise<MatchOutcome> {
+export async function matchHints(scope: HTMLElement, hints: Hint[], cancelled: () => boolean = () => false): Promise<MatchOutcome> {
   const matches: HintMatch[] = [];
   const missed: Hint[] = [];
   let docN: NormalizedDoc | null = null;
   const getDoc = () => (docN ??= buildNormalizedDoc(scope));
+  let yieldedAt = performance.now();
   for (const hint of hints) {
+    if (cancelled()) break;
     const m = await matchOne(scope, hint, getDoc).catch(() => null);
     if (m) matches.push(m);
     else missed.push(hint);
+    if (performance.now() - yieldedAt > 8) {
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+      yieldedAt = performance.now();
+    }
   }
   return { matches, missed };
 }

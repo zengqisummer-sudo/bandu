@@ -7,11 +7,13 @@ import { resolveAiConfig } from "../../services/ai/client";
 import { Markdown } from "../common/Markdown";
 import { truncate } from "../../lib/utils";
 
-export function ChatTab() {
+export function ChatTab({ embedded = false }: { embedded?: boolean }) {
   const sessions = useChatStore((s) => s.sessions);
   const activeId = useChatStore((s) => s.activeId);
   const pending = useChatStore((s) => s.pending);
-  const draft = useChatStore((s) => s.draft);
+  const sendingId = useChatStore(s => s.sendingId);
+  const rawDraft = useChatStore((s) => s.draft);
+  const draft = sendingId === activeId ? rawDraft : null;
   const settings = useSettingsStore((s) => s.settings);
   const openSettings = useUiStore((s) => s.openSettings);
   const [text, setText] = useState("");
@@ -36,7 +38,7 @@ export function ChatTab() {
   return (
     <div className="flex h-full flex-col">
       {/* 会话选择 */}
-      <div className="flex shrink-0 items-center gap-1.5 border-b border-line px-2 py-2">
+      {!embedded && <div className="flex shrink-0 items-center gap-1.5 border-b border-line px-2 py-2">
         <select
           value={activeId ?? ""}
           onChange={(e) => useChatStore.getState().select(e.target.value)}
@@ -79,13 +81,14 @@ export function ChatTab() {
         </button>
       </div>
 
+      }
       {/* 消息流 */}
       <div ref={threadRef} className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
         {!active ? (
           <p className="mt-8 text-center text-xs leading-relaxed text-ink-faint">
             随时就已读内容发起讨论
             <br />
-            也可以在正文选中文字后点「提问」
+            也可以在正文选中文字后点「问AI」
           </p>
         ) : (
           <>
@@ -162,7 +165,7 @@ export function ChatTab() {
             )}
           </div>
         )}
-        <p className="mt-1.5 px-1 text-[10px] text-ink-faint">对话自动写入 对话.md（每轮完成后追加）</p>
+        <p className="mt-1.5 px-1 text-[10px] text-ink-faint">对话自动写入 想法.md（每轮完成后追加）</p>
       </div>
     </div>
   );

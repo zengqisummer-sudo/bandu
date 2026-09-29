@@ -1,3 +1,5 @@
+import { applyPendingNavigation } from "../stores/readingNavigation";
+import { useFootnoteStore } from "../stores/footnoteStore";
 import { useEffect, useState } from "react";
 import { useSettingsStore } from "../stores/settingsStore";
 import { useReaderStore } from "../stores/readerStore";
@@ -30,12 +32,14 @@ export function ReaderPage({ bookId }: { bookId: string }) {
         navigate("/");
         return;
       }
-      await useChatStore.getState().load(bookId);
+      await Promise.all([useChatStore.getState().load(bookId), useFootnoteStore.getState().load(useReaderStore.getState().book!)]);
+      if (!cancelled) await applyPendingNavigation(bookId);
     })();
     return () => {
       cancelled = true;
       useReaderStore.getState().closeBook();
       useChatStore.getState().reset();
+      useFootnoteStore.getState().reset();
     };
   }, [bookId, bootState]);
 

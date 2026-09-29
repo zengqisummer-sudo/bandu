@@ -13,11 +13,7 @@ export const BASE_SYSTEM = `你是一位陪伴读者阅读的资深编辑与向�
 
 export const DEFAULT_PROMPTS: Record<"poetry" | "novel" | "social", PromptSet> = {
   novel: {
-    chapter: `读者刚翻开小说的新一章。基于本章内容写一段「章节导读」，帮助读者带着正确的期待进入本章：
-- 叙事视角与时间线：谁在讲述？相对前文是顺叙、插叙还是倒叙？
-- 场景与人物：本章出场的关键人物与相互关系（仅限已读文本能确认的）
-- 阅读提示：这一章在结构上承担什么功能，值得留意哪些细节
-导读讲"怎么读"，不是"讲了什么"：不复述情节，不透露本章后段的关键转折。150–300 字。`,
+    chapter: `根据提供的本章完整原文，梳理本章写作脉络：作者提出什么问题、想论证什么、论证过程和结论是什么、引用其他学者的哪些观点、作者的态度是什么。允许给出本章结论，不涉及后续章节。小说请按叙事、人物、主题梳理，诗歌请按意象、形式与主题梳理，不强套论证模板。中文 Markdown，信息清晰，不复述大段原文。`,
     passage: `读者选中了一段文字请求深挖。围绕这段文字解释：
 - 这段是谁的视角、谁在说话？其中的人名、代词分别指谁？
 - 作者写这段的功能：铺垫、转折、心理刻画，还是别的？
@@ -32,11 +28,7 @@ export const DEFAULT_PROMPTS: Record<"poetry" | "novel" | "social", PromptSet> =
 数量随章节长度与难度定，通常 6~18 条；inline 为主，block 用在真正需要停下来的地方。宁缺毋滥，显而易见的不标。`,
   },
   poetry: {
-    chapter: `读者翻开了新的一组诗。写一段导读，注入解码所需的钥匙：
-- 诗人所处时代与创作背景（可用你的背景知识，但不预告这组诗后面的内容）
-- 形式与格律：体裁、韵式、分行的讲究
-- 意象系统：核心意象及其传统含义
-200–350 字。`,
+    chapter: `根据提供的本章完整原文，梳理本章写作脉络：作者提出什么问题、想论证什么、论证过程和结论是什么、引用其他学者的哪些观点、作者的态度是什么。允许给出本章结论，不涉及后续章节。小说请按叙事、人物、主题梳理，诗歌请按意象、形式与主题梳理，不强套论证模板。中文 Markdown，信息清晰，不复述大段原文。`,
     passage: `读者选中了诗句。解释：
 - 字面在说什么（难词、倒装、省略的补全）
 - 意象与典故的来历
@@ -51,11 +43,7 @@ export const DEFAULT_PROMPTS: Record<"poetry" | "novel" | "social", PromptSet> =
 通常 5~15 条。注释是钥匙不是答案，保留多义性。`,
   },
   social: {
-    chapter: `读者翻开学术/社科著作的新一章。写一段导读：
-- 本章要回答的问题，以及它在全书论证中的位置（只基于已读部分与本章）
-- 论证路径预览：概念界定、案例、数据还是驳论？
-- 需要预先掌握的关键概念，用日常语言解释
-200–350 字。`,
+    chapter: `根据提供的本章完整原文，梳理本章写作脉络：作者提出什么问题、想论证什么、论证过程和结论是什么、引用其他学者的哪些观点、作者的态度是什么。允许给出本章结论，不涉及后续章节。小说请按叙事、人物、主题梳理，诗歌请按意象、形式与主题梳理，不强套论证模板。中文 Markdown，信息清晰，不复述大段原文。`,
     passage: `读者选中了一段学术文本。解释：
 - 艰深名词与概念，用日常语言加例子
 - 这段在论证中的作用：前提、论据、推论还是让步？
@@ -75,6 +63,7 @@ export function effectivePromptSet(prompts: Prompts | null, contentType: BookMet
   const d = DEFAULT_PROMPTS[contentType];
   const u = prompts?.[contentType];
   return {
+    footnote: u?.footnote?.trim() || "你是一位书籍编辑。为读者选中的名词、地名、人物或句子写一条简洁的脚注式解释，说明含义和必要背景；不作长篇分析，不杜撰，不确定时明确说明。直接返回注释正文，使用中文。",
     chapter: u?.chapter?.trim() || d.chapter,
     passage: u?.passage?.trim() || d.passage,
     chat: u?.chat?.trim() || d.chat,
@@ -105,7 +94,7 @@ export function buildChapterNoteRequest(args: {
   if (prevWindow) parts.push(`【前文结尾（供衔接，不必复述）】\n${prevWindow}`);
   parts.push(`【本章全文${truncated ? "（超长，已截断尾部）" : ""}】\n${chapterText}`, "请写本章导读。");
   return {
-    system: `${BASE_SYSTEM}\n\n${promptSet.chapter}`,
+    system: `你是一位中文伴读编辑。根据提供的本章原文写章节导读，允许概括本章结论，不引用后续章节。梳理本章写作脉络、作者提出的问题、论证过程与结论、引用的其他学者观点及作者态度；小说/诗歌按其文体梳理结构、人物或意象。使用 Markdown。\n\n${promptSet.chapter}\n以上风格要求中若限制本章结论，以本章可完整概括为准。`,
     messages: [{ role: "user", content: parts.join("\n\n") }],
   };
 }

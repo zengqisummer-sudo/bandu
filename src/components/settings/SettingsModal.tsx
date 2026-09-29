@@ -12,7 +12,7 @@ import {
   resolveAiConfig,
   testConnection,
 } from "../../services/ai/client";
-import { DEFAULT_PROMPTS } from "../../services/ai/prompts";
+import { DEFAULT_PROMPTS, effectivePromptSet } from "../../services/ai/prompts";
 import { loadHandles, pickDirectory } from "../../services/storage/handles";
 
 export function SettingsModal() {
@@ -21,6 +21,8 @@ export function SettingsModal() {
   return (
     <Modal open={open} onClose={close} title="设置" wide>
       <AiSection />
+      <hr className="my-5 border-line" />
+      <BookSearchSection />
       <hr className="my-5 border-line" />
       <StorageSection />
       <hr className="my-5 border-line" />
@@ -194,7 +196,7 @@ function StorageSection() {
           <FolderRow label="阅读产物文件夹（markdown，Obsidian 可索引）" name={names.product} onChange={() => void changeFolder("product")} />
           <FolderRow label="运行状态文件夹（JSON / epub / 缓存）" name={names.state} onChange={() => void changeFolder("state")} />
           <p className="mt-2 text-xs text-ink-faint">
-            注释/对话/摘录只会追加写入，不覆盖你在 Obsidian 里的手动编辑。
+            注释/想法/摘录正文只会追加写入，不覆盖你在 Obsidian 里的手动编辑。
           </p>
         </>
       ) : (
@@ -234,7 +236,7 @@ const TYPE_TABS: { id: ContentType; label: string }[] = [
   { id: "social", label: "社科" },
 ];
 
-const SCENE_LABELS = { chapter: "章节导读", hints: "随文注释", passage: "段落深挖", chat: "对话" } as const;
+const SCENE_LABELS = { chapter: "章节导读", footnote: "AI注释（输入框右下角问AI）", chat: "AI问书" } as const;
 
 function PromptsSection() {
   const prompts = useSettingsStore((s) => s.prompts);
@@ -271,9 +273,9 @@ function PromptsSection() {
       {(Object.keys(SCENE_LABELS) as (keyof typeof SCENE_LABELS)[]).map((scene) => (
         <Field key={scene} label={SCENE_LABELS[scene]}>
           <textarea
-            value={draft[scene]}
+            value={draft[scene] ?? ""}
             onChange={(e) => setDraft({ ...draft, [scene]: e.target.value })}
-            placeholder={DEFAULT_PROMPTS[type][scene]}
+            placeholder={scene === "footnote" ? effectivePromptSet(null, type).footnote : DEFAULT_PROMPTS[type][scene]}
             rows={4}
             className="w-full resize-y rounded-lg border border-line bg-paper px-3 py-2 text-xs leading-relaxed outline-none focus:border-accent"
           />
@@ -281,7 +283,7 @@ function PromptsSection() {
       ))}
       <div className="mt-2 flex justify-end gap-2">
         <button
-          onClick={() => setDraft({ chapter: "", passage: "", chat: "", hints: "" })}
+          onClick={() => setDraft({ chapter: "", passage: "", chat: "", hints: "", footnote: "" })}
           className="rounded-lg border border-line px-3 py-1.5 text-xs text-ink-soft hover:bg-accent-soft"
         >
           恢复默认
@@ -303,7 +305,7 @@ function ContextSection() {
     <section>
       <h3 className="mb-3 text-sm font-semibold">上下文与生成</h3>
       <div className="grid grid-cols-2 gap-3">
-        <Field label="前文窗口字数（注释/对话携带）">
+        <Field label="前文窗口字数（注释/问AI携带）">
           <input
             type="number"
             min={1000}
@@ -314,17 +316,7 @@ function ContextSection() {
             className="w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm"
           />
         </Field>
-        <Field label="章节导读最长送入字数">
-          <input
-            type="number"
-            min={2000}
-            max={50000}
-            step={1000}
-            value={settings.chapterNoteMaxChars}
-            onChange={(e) => void saveSettings({ chapterNoteMaxChars: Math.max(2000, Number(e.target.value) || 12000) })}
-            className="w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm"
-          />
-        </Field>
+        <p className="mt-3 self-center text-xs leading-relaxed text-ink-faint">章节导读读取本章完整原文，可以概括本章结论；不会发送后续章节。</p>
       </div>
       <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm">
         <input
@@ -333,15 +325,6 @@ function ContextSection() {
           onChange={(e) => void saveSettings({ autoChapterNote: e.target.checked })}
         />
         打开新章节时自动生成章节导读
-      </label>
-      <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm">
-        <input
-          type="checkbox"
-          checked={settings.autoChapterHints}
-          onChange={(e) => void saveSettings({ autoChapterHints: e.target.checked })}
-        />
-        打开新章节时自动生成随文注释
-        <span className="text-xs text-ink-faint">（整章送 AI，消耗较大；关闭时可在注释面板手动生成）</span>
       </label>
       <label className="mt-2 flex cursor-pointer items-start gap-2 text-sm">
         <input
@@ -368,4 +351,27 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
       {children}
     </div>
   );
+}
+
+function BookSearchSection() {
+  const settings = useSettingsStore(s => s.settings);
+  const [cfg, setCfg] = useState(settings.bookSearch ?? { protocol: "responses" as const, baseUrl: "https://api.openai.com/v1", model: "" });
+  const [key, setKey] = useState(() => localStorage.getItem("aireader.key.bookSearch") ?? "");
+  const save = async () => {
+    try {
+      const next = { ...cfg, baseUrl: cfg.baseUrl.trim(), model: cfg.model.trim() };
+      if (next.baseUrl && !/^https?:\/\//.test(next.baseUrl)) { toast("error", "请输入完整的 HTTP(S) 地址"); return; }
+      await useSettingsStore.getState().saveSettings({ bookSearch: next });
+      if (key.trim()) localStorage.setItem("aireader.key.bookSearch", key.trim());
+      else localStorage.removeItem("aireader.key.bookSearch");
+      toast("success", "联网模型设置已保存");
+    } catch (e) { toast("error", `保存失败：${String(e)}`); }
+  };
+  return <section><h3 className="mb-2 text-sm font-semibold">全书导读 · 联网模型</h3><p className="text-xs text-ink-faint">独立配置支持联网搜索的模型。只发送书名与作者，不发送原文。API key 仅保存在本浏览器。</p>
+    <Field label="联网接口"><select value={cfg.protocol} onChange={e => setCfg({ ...cfg, protocol: e.target.value as typeof cfg.protocol, baseUrl: e.target.value === "anthropic" ? "https://api.anthropic.com" : "https://api.openai.com/v1" })} className="w-full rounded-lg border border-line bg-paper p-2 text-sm"><option value="responses">OpenAI Responses / 兼容联网接口</option><option value="anthropic">Anthropic 网页搜索</option></select></Field>
+    <Field label="Base URL"><input value={cfg.baseUrl} onChange={e => setCfg({ ...cfg, baseUrl: e.target.value })} className="w-full rounded-lg border border-line bg-paper p-2 text-sm" /></Field>
+    <Field label="支持搜索的模型 ID"><input value={cfg.model} onChange={e => setCfg({ ...cfg, model: e.target.value })} className="w-full rounded-lg border border-line bg-paper p-2 text-sm" /></Field>
+    <Field label="API key"><input type="password" autoComplete="off" value={key} onChange={e => setKey(e.target.value)} className="w-full rounded-lg border border-line bg-paper p-2 text-sm" /></Field>
+    <div className="mt-3 flex justify-end"><button onClick={() => void save()} className="rounded-lg bg-accent px-3 py-1.5 text-xs text-paper">保存联网设置</button></div>
+  </section>;
 }

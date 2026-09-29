@@ -7,6 +7,7 @@ import { ExcerptImageModal } from "./ExcerptImageModal";
 import { groupClippings, parseClippings, parsePlainText } from "../../services/import/kindle";
 import { chapterLabelFor } from "../../services/ai/context";
 import { toast } from "../../stores/uiStore";
+import { jumpToPassage } from "../../stores/passageNavigation";
 import { truncate } from "../../lib/utils";
 
 const SOURCE_LABEL = { manual: "选中摘录", kindle: "Kindle", text: "文本导入" } as const;
@@ -30,6 +31,8 @@ export function ExcerptsTab() {
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [tagOpen, setTagOpen] = useState(false);
+  const [merging, setMerging] = useState(false);
+  const startMerge = (id: string) => { setSelected(new Set([id])); setSelectMode(true); };
   if (!book) return null;
 
   const located = excerpts
@@ -42,13 +45,13 @@ export function ExcerptsTab() {
   const groups = groupByChapter(book, ordered);
 
   const toggle = (id: string) =>
-    setSelected((prev) => {
+    !merging && setSelected((prev) => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
   const setMany = (ids: string[], on: boolean) =>
-    setSelected((prev) => {
+    !merging && setSelected((prev) => {
       const next = new Set(prev);
       for (const id of ids) (on ? next.add(id) : next.delete(id));
       return next;
@@ -85,7 +88,7 @@ export function ExcerptsTab() {
               />
               全选本书 · 已选 {selected.size}
             </label>
-            <button onClick={exitSelect} className="text-xs text-ink-faint hover:text-ink">
+            <button disabled={merging} onClick={exitSelect} className="text-xs text-ink-faint hover:text-ink">
               取消
             </button>
           </>
@@ -150,13 +153,13 @@ export function ExcerptsTab() {
         ) : (
           <>
             {located.map((e) => (
-              <ExcerptCard key={e.id} ex={e} bookTags={bookTags} />
+              <ExcerptCard key={e.id} ex={e} bookTags={bookTags} onMerge={() => startMerge(e.id)} />
             ))}
             {unlocated.length > 0 && (
               <>
                 <p className="mb-2 mt-4 px-1 text-xs text-ink-faint">未定位（原文中没找到）</p>
                 {unlocated.map((e) => (
-                  <ExcerptCard key={e.id} ex={e} bookTags={bookTags} />
+                  <ExcerptCard key={e.id} ex={e} bookTags={bookTags} onMerge={() => startMerge(e.id)} />
                 ))}
               </>
             )}
@@ -164,19 +167,24 @@ export function ExcerptsTab() {
         )}
       </div>
       {selectMode && (
-        <div className="flex shrink-0 items-center justify-between gap-2 border-t border-line px-3 py-2">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-line px-3 py-2">
           <span className="text-xs text-ink-faint">已选 {selected.size} 条</span>
           <span className="flex items-center gap-2">
+            <button disabled={selectedIds.length < 2 || merging} className="rounded-md bg-accent px-3 py-1.5 text-xs text-paper disabled:opacity-40" onClick={async () => {
+              setMerging(true);
+              try { if (await useReaderStore.getState().mergeExcerpts(selectedIds)) { toast("success", "摘录已合并，标签已合并"); exitSelect(); } }
+              finally { setMerging(false); }
+            }}>{merging ? "合并中…" : "合并"}</button>
             <button
               onClick={() => setTagOpen(true)}
-              disabled={!selected.size}
+              disabled={!selected.size || merging}
               className="rounded-md border border-line px-3 py-1.5 text-xs text-ink-soft hover:border-accent hover:text-ink disabled:opacity-40"
             >
               批量打标签
             </button>
             <button
               onClick={doDelete}
-              disabled={!selected.size}
+              disabled={!selected.size || merging}
               className="rounded-md border border-line px-3 py-1.5 text-xs text-red-500 hover:border-red-400 hover:bg-red-50 disabled:opacity-40"
             >
               批量删除
@@ -208,14 +216,19 @@ function ExcerptCard({
   selectMode = false,
   checked = false,
   onToggle,
+  onMerge,
 }: {
   ex: Excerpt;
   bookTags: string[];
   selectMode?: boolean;
   checked?: boolean;
   onToggle?: () => void;
+  onMerge?: () => void;
 }) {
   const book = useReaderStore((s) => s.book);
+  const focus = useReaderStore(s => s.focus);
+  const cardRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (focus?.id === ex.id && focus.source === "text") cardRef.current?.scrollIntoView({ block: "center", behavior: "smooth" }); }, [focus, ex.id]);
   const [editingTags, setEditingTags] = useState(false);
   const [draft, setDraft] = useState<string[]>([]);
   const [exportOpen, setExportOpen] = useState(false);
@@ -283,19 +296,11 @@ function ExcerptCard({
   }
 
   return (
-    <div className="mb-2.5 rounded-xl border border-line p-3.5">
-      <button
-        disabled={ex.spine < 0}
-        onClick={() => void useReaderStore.getState().openSpine(ex.spine, ex.anchor?.para ?? 0)}
-        className="block w-full text-left"
-      >
-        <p className="border-l-2 border-accent pl-2 text-[13px] leading-relaxed text-ink">
-          {truncate(ex.quote.replace(/\s+/g, " "), 120)}
-        </p>
-      </button>
-
+    <div ref={cardRef} className={`mb-2.5 rounded-xl border p-3.5 ${focus?.id === ex.id ? "border-accent bg-accent-soft/40" : "border-line"}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1 pt-2">
       {editingTags ? (
-        <div className="mt-2" ref={editRef}>
+        <div className="min-w-0" ref={editRef}>
           <TagInput value={draft} onChange={setDraft} bookTags={bookTags} autoFocus />
           <div className="mt-1.5 flex justify-end gap-2 text-xs">
             <button onClick={() => setEditingTags(false)} className="text-ink-faint hover:text-ink">
@@ -308,7 +313,7 @@ function ExcerptCard({
         </div>
       ) : (
         (ex.tags?.length ?? 0) > 0 && (
-          <div className="mt-2 flex flex-wrap gap-1">
+          <div className="flex flex-wrap gap-1">
             {ex.tags!.map((t) => (
               <span key={t} className="rounded-full bg-accent-soft px-2 py-0.5 text-xs text-accent">
                 #{t}
@@ -318,30 +323,25 @@ function ExcerptCard({
         )
       )}
 
-      <div className="mt-2 flex items-center justify-between text-xs text-ink-faint">
-        <span>
-          {label} · {SOURCE_LABEL[ex.source]}
-        </span>
-        <span className="flex items-center gap-2.5">
-          {!editingTags && (
-            <button onClick={startEdit} className="hover:text-accent">
-              {ex.tags?.length ? "改标签" : "标签"}
-            </button>
-          )}
-          <button onClick={() => setExportOpen(true)} className="hover:text-accent">
-            出图
-          </button>
-          <button
-            onClick={() => {
-              if (confirm("删除这条摘录？（markdown 中已写入的记录保留）")) {
-                void useReaderStore.getState().removeExcerpt(ex.id);
-              }
-            }}
-            className="hover:text-red-500"
-          >
-            删除
-          </button>
-        </span>
+        </div>
+      <div className="flex shrink-0 items-center gap-1 text-ink-faint">
+        <button aria-label="编辑标签" title="编辑标签" onClick={startEdit} className="rounded-md p-2 hover:bg-accent-soft hover:text-accent"><ExcerptIcon kind="tag" /></button>
+        <details className="relative">
+          <summary aria-label="更多摘录操作" title="更多操作" className="cursor-pointer list-none rounded-md p-2 hover:bg-accent-soft [&::-webkit-details-marker]:hidden"><ExcerptIcon kind="more" /></summary>
+          <div className="absolute top-full right-0 z-10 mt-1 w-24 rounded-lg border border-line bg-card p-1 shadow-lg">
+            <button className="block w-full rounded p-2 text-left text-xs hover:bg-accent-soft" onClick={e => { e.currentTarget.closest("details")?.removeAttribute("open"); setExportOpen(true); }}>导出图片</button>
+            <button className="block w-full rounded p-2 text-left text-xs hover:bg-accent-soft" onClick={e => { e.currentTarget.closest("details")?.removeAttribute("open"); onMerge?.(); }}>合并</button>
+            <button className="block w-full rounded p-2 text-left text-xs text-red-500 hover:bg-accent-soft" onClick={() => {
+              if (confirm("删除这条摘录？（markdown 中已写入的记录保留）")) void useReaderStore.getState().removeExcerpt(ex.id);
+            }}>删除</button>
+          </div>
+        </details>
+      </div>
+      </div>
+      <div className="mt-3 space-y-4">
+        {(ex.segments ?? [ex]).map((segment, i) => <button key={i} disabled={segment.spine < 0} className="block w-full text-left" onClick={() => {
+          void jumpToPassage(segment.spine, segment.anchor, ex.id);
+        }}><p className="whitespace-pre-wrap border-l-2 border-accent pl-2 text-[13px] leading-relaxed text-ink">{segment.quote}</p></button>)}
       </div>
       {exportOpen && <ExcerptImageModal ex={ex} onClose={() => setExportOpen(false)} />}
     </div>
@@ -502,4 +502,10 @@ function ModeBtn({ active, onClick, label }: { active: boolean; onClick: () => v
       {label}
     </button>
   );
+}
+
+function ExcerptIcon({ kind }: { kind: "export" | "tag" | "more" }) {
+  return <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    {kind === "export" ? <><path d="M7 7V4a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1v-3" /><path d="M3 12h12m-4-4 4 4-4 4" /></> : kind === "tag" ? <><path d="m3 3 9 0 9 9-9 9-9-9Z" /><circle cx="8" cy="8" r="1.5" /></> : <><circle cx="4" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="20" cy="12" r="1" /></>}
+  </svg>;
 }

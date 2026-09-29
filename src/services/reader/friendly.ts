@@ -15,7 +15,7 @@
  * 2. 引号分对话与引用：引号内含句末标点(。！？…) → 对话，左引号前、右引号后各断一次独立成行，
  *    但对话内部的句末标点不再断行（“他生气了。他走了。” 整句连排，不从中间拆开）；
  *    引号内无标点或只含句间标点(、，；：) → 引用，不作特殊处理，随通用句末规则断行；
- * 3. 防碎片：断点距上一断点不足 2 字则跳过；段末不留空行；
+ * 3. 圆括号（全角/半角，可嵌套）内部不拆行；防碎片：断点距上一断点不足 2 字则跳过；段末不留空行；
  * 4. 段落门槛：整段不足 36 字不处理——短段、诗行、标题保持原样。
  * 分割线只出现在"发生过拆行"的段落边界：没拆过的区域（如诗歌）保持原书样貌。
  */
@@ -65,8 +65,19 @@ export function computeBreakOffsets(text: string): number[] {
   };
 
   let i = 0;
+  let parenDepth = 0;
   while (i < text.length) {
     const ch = text[i];
+    if (ch === "（" || ch === "(") {
+      parenDepth++;
+      i++;
+      continue;
+    }
+    if (parenDepth > 0) {
+      if (ch === "）" || ch === ")") parenDepth--;
+      i++;
+      continue;
+    }
     const close = PAIRS[ch] ? findClose(text, i, ch, PAIRS[ch]) : -2;
 
     if (close >= 0) {
@@ -97,27 +108,31 @@ export function computeBreakOffsets(text: string): number[] {
   return offsets;
 }
 
-/** 块内字符偏移 → 文本节点位置（与 anchor.ts posToNode 同思路，此处独立实现避免耦合） */
-function nodeAt(block: HTMLElement, charOffset: number): { node: Text; offset: number } | null {
+/** 一次收集原始文本节点；插入时反向移动游标，避免每个断点重新遍历整段。 */
+function textNodes(block: HTMLElement): { node: Text; start: number }[] {
   const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+  const nodes: { node: Text; start: number }[] = [];
   let acc = 0;
   let t = walker.nextNode() as Text | null;
   while (t) {
     const len = t.data.length;
-    if (acc + len >= charOffset) return { node: t, offset: charOffset - acc };
+    nodes.push({ node: t, start: acc });
     acc += len;
     t = walker.nextNode() as Text | null;
   }
-  return null;
+  return nodes;
 }
 
 /** 在块内一组字符偏移处插入换行占位（空 span，display:block），从后往前避免偏移失效 */
 function insertGaps(block: HTMLElement, offsets: number[]): number {
+  const nodes = textNodes(block);
+  let index = nodes.length - 1;
   let inserted = 0;
   for (let k = offsets.length - 1; k >= 0; k--) {
-    const pos = nodeAt(block, offsets[k]);
-    if (!pos) continue;
-    const { node, offset } = pos;
+    while (index > 0 && nodes[index].start >= offsets[k]) index--;
+    if (index < 0) continue;
+    const { node, start } = nodes[index];
+    const offset = offsets[k] - start;
     const gap = document.createElement("span");
     gap.className = "fr-gap";
     gap.setAttribute("aria-hidden", "true");
@@ -144,6 +159,8 @@ export function applyFriendlyLayout(blocks: HTMLElement[]): number {
 
   blocks.forEach((block, i) => {
     if (!SPLIT_TAGS.has(block.tagName)) return;
+    // 短段和单句段也统一左对齐，不由是否实际拆行决定缩进。
+    block.classList.add("fr-paragraph");
     const text = block.textContent ?? "";
     if (text.trim().length < MIN_PARA_CHARS) return;
     const offsets = computeBreakOffsets(text);

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useReaderStore } from "../../stores/readerStore";
 import { useSettingsStore } from "../../stores/settingsStore";
-import { useUiStore } from "../../stores/uiStore";
+import { useUiStore, toast } from "../../stores/uiStore";
 import { chapterLabelFor } from "../../services/ai/context";
 import { navigate } from "../../lib/router";
 
@@ -34,7 +34,7 @@ export function ReaderHeader({ tocOpen, onToggleToc }: { tocOpen: boolean; onTog
         目录
       </HeaderBtn>
       <PrefsButton />
-      <HeaderBtn active={panelOpen} onClick={() => setPanel(!panelOpen)} title="注释与对话面板">
+      <HeaderBtn active={panelOpen} onClick={() => setPanel(!panelOpen)} title="注释、想法与摘录面板">
         面板
       </HeaderBtn>
       <HeaderBtn onClick={openSettings} title="设置">
@@ -70,9 +70,28 @@ function HeaderBtn({
 
 function PrefsButton() {
   const [open, setOpen] = useState(false);
+  const [pendingFriendly, setPendingFriendly] = useState<boolean | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const reading = useSettingsStore((s) => s.settings.reading);
   const saveSettings = useSettingsStore((s) => s.saveSettings);
+
+  useEffect(() => {
+    if (pendingFriendly === null) return;
+    let cancelled = false;
+    let frame = 0;
+    // 先让“正在排版”提示绘制出来，再触发同步的章节 DOM 排版。
+    frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => {
+        const current = useSettingsStore.getState().settings.reading;
+        void saveSettings({ reading: { ...current, friendly: pendingFriendly } })
+          .catch(() => { if (!cancelled) toast("error", "阅读偏好保存失败，请重试"); })
+          .finally(() => {
+            if (!cancelled) frame = requestAnimationFrame(() => setPendingFriendly(null));
+          });
+      });
+    });
+    return () => { cancelled = true; cancelAnimationFrame(frame); };
+  }, [pendingFriendly, saveSettings]);
 
   useEffect(() => {
     if (!open) return;
@@ -87,6 +106,11 @@ function PrefsButton() {
 
   return (
     <div className="relative" ref={ref}>
+      {pendingFriendly !== null && (
+        <div role="status" className="pointer-events-none fixed bottom-6 left-1/2 z-[60] -translate-x-1/2 rounded-lg border border-line bg-card px-4 py-2 text-sm text-ink shadow-lg">
+          {pendingFriendly ? "正在排版，请稍候…" : "正在恢复原文排版，请稍候…"}
+        </div>
+      )}
       <HeaderBtn onClick={() => setOpen((v) => !v)} active={open} title="阅读偏好">
         Aa
       </HeaderBtn>
@@ -116,13 +140,15 @@ function PrefsButton() {
             </span>
             <div className="flex gap-1">
               <button
-                onClick={() => patch({ friendly: true })}
+                disabled={pendingFriendly !== null}
+                onClick={() => { if (!reading.friendly) setPendingFriendly(true); }}
                 className={`rounded-md border px-2.5 py-1 text-xs ${reading.friendly ? "border-accent bg-accent-soft" : "border-line"}`}
               >
                 开
               </button>
               <button
-                onClick={() => patch({ friendly: false })}
+                disabled={pendingFriendly !== null}
+                onClick={() => { if (reading.friendly) setPendingFriendly(false); }}
                 className={`rounded-md border px-2.5 py-1 text-xs ${!reading.friendly ? "border-accent bg-accent-soft" : "border-line"}`}
               >
                 关

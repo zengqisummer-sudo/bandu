@@ -1,3 +1,5 @@
+> 2026-09-28：2.0 已确认变更优先以 docs/REQUIREMENTS.md、docs/SPEC.md 为准；下文保留历史背景。
+
 # SPEC — AI 伴读工具 技术规格
 
 > 依据 REQUIREMENTS.md 编写。状态：**已确认**（2026-07-06，决策记录见 §7），按此实现。

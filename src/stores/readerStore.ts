@@ -16,7 +16,6 @@ import { beforeWindow, chapterFullText, chapterLabelFor, readChapterTitles } fro
 import {
   buildChapterHintsRequest,
   buildChapterNoteRequest,
-  buildPassageRequest,
   effectivePromptSet,
 } from "../services/ai/prompts";
 import { friendlyAiError, resolveAiConfig, streamChat } from "../services/ai/client";
@@ -26,10 +25,10 @@ import {
   appendAnnotationMd,
   appendExcerptMd,
   appendHintsMd,
-  updateAnnotationMd,
   updateExcerptTagsMd,
 } from "../services/product/markdown";
 import { recordTagUse } from "../lib/tags";
+import { recordTopicUse } from "../lib/topics";
 import { locateQuote } from "../services/import/kindle";
 import { useSettingsStore } from "./settingsStore";
 import { toast } from "./uiStore";
@@ -53,6 +52,8 @@ const defaultProgress = (): Progress => ({
 // 章节导读/随文注释并发防抖 & 进度写盘节流（模块级，不进 store）
 const noteInflight = new Set<string>();
 const hintsInflight = new Set<string>();
+let bookEpoch = 0;
+let chapterEpoch = 0;
 let progressTimer: ReturnType<typeof setTimeout> | null = null;
 
 function scheduleProgressWrite(bookId: string, progress: Progress) {
@@ -105,15 +106,17 @@ interface ReaderState {
 
   openBook(id: string): Promise<boolean>;
   closeBook(): void;
+  returnPoint: Progress | null;
+  jumpTo(spine: number, para: number): Promise<void>;
+  returnToReading(): Promise<void>;
   openSpine(spine: number, para?: number): Promise<void>;
   clearPendingScroll(): void;
   reportPosition(para: number): void;
-  deepDive(anchor: Anchor): Promise<void>;
   generateChapterNote(force?: boolean): Promise<void>;
   generateChapterHints(auto?: boolean): Promise<void>;
   reportHintRender(report: HintRenderReport | null): void;
   /** 手写批注：anchor 为 null 表示不锚定原文的本章批注 */
-  addManualAnnotation(anchor: Anchor | null, text: string): Promise<void>;
+  addManualAnnotation(anchor: Anchor | null, text: string, topics?: string[]): Promise<void>;
   /** 编辑批注正文：应用内 JSON 为准，单向同步进 Obsidian markdown（不反向） */
   editAnnotation(id: string, content: string): Promise<void>;
   addExcerptFromAnchor(anchor: Anchor): Promise<void>;
@@ -122,6 +125,7 @@ interface ReaderState {
   removeExcerpt(id: string): Promise<void>;
   /** 批量删除摘录：JSON 整写一次；md 保留历史 */
   removeExcerpts(ids: string[]): Promise<void>;
+  mergeExcerpts(ids: string[]): Promise<boolean>;
   /** 更新摘录标签：JSON 整写 + 摘录.md 定点同步标签行 */
   updateExcerptTags(id: string, tags: string[]): Promise<void>;
   /** 批量追加标签：并入选中摘录已有标签（去重），JSON 整写一次 + 逐条同步 md 标签行 */
@@ -156,19 +160,22 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       annotations: [...s.annotations, anno],
       streaming: { ...s.streaming, [anno.id]: "" },
     }));
-    const scene = anno.kind === "chapter" ? "章节导读" : "段落深挖";
+    const scene = "章节导读";
     const bookId = get().bookId;
+    const book = get().book;
+    const epoch = bookEpoch;
     let acc = "";
     try {
-      for await (const chunk of streamChat(cfg, { ...req, maxTokens: 1024 })) {
+      for await (const chunk of streamChat(cfg, { ...req, maxTokens: 4096 })) {
+        if (epoch !== bookEpoch) return;
         acc += chunk;
         set((s) => ({ streaming: { ...s.streaming, [anno.id]: acc } }));
       }
+      if (epoch !== bookEpoch) return;
       const done = { ...anno, content: acc.trim() };
       if (!done.content) throw new Error("模型没有返回内容");
-      set((s) => ({ annotations: s.annotations.map((a) => (a.id === anno.id ? done : a)) }));
+      set((s) => ({ annotations: s.annotations.filter(a => a.id === anno.id || a.kind !== "chapter" || a.spine !== anno.spine).map((a) => (a.id === anno.id ? done : a)) }));
       await saveAnnotations();
-      const book = get().book;
       if (book) await appendAnnotationMd(book, done);
       if (bookId)
         await logAiExchange({
@@ -204,11 +211,11 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       set({ hints: file });
       return;
     }
-    const settings = useSettingsStore.getState().settings;
-    if (settings.autoChapterHints && resolveAiConfig(settings)) void get().generateChapterHints(true);
+
   }
 
   return {
+    returnPoint: null,
     bookId: null,
     book: null,
     chapter: null,
@@ -226,6 +233,7 @@ export const useReaderStore = create<ReaderState>((set, get) => {
     hintsError: null,
 
     async openBook(id) {
+      const epoch = ++bookEpoch;
       const book = await storage().readJson<BookMeta>("state", paths.book(id));
       if (!book) {
         toast("error", "找不到这本书");
@@ -234,7 +242,9 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       const progress = (await storage().readJson<Progress>("state", paths.progress(id))) ?? defaultProgress();
       const annos = await storage().readJson<AnnotationsFile>("state", paths.annotations(id));
       const excerpts = await storage().readJson<ExcerptsFile>("state", paths.excerpts(id));
+      if (epoch !== bookEpoch) return false;
       set({
+        returnPoint: null,
         bookId: id,
         book,
         progress,
@@ -252,12 +262,14 @@ export const useReaderStore = create<ReaderState>((set, get) => {
     },
 
     closeBook() {
+      ++bookEpoch; ++chapterEpoch;
       const { bookId, progress } = get();
       if (bookId) {
         flushProgressWrite(bookId, progress);
         closeEpub(bookId);
       }
       set({
+        returnPoint: null,
         bookId: null,
         book: null,
         chapter: null,
@@ -273,12 +285,14 @@ export const useReaderStore = create<ReaderState>((set, get) => {
     },
 
     async openSpine(spine, para = 0) {
+      const epoch = ++chapterEpoch;
       const { bookId, book } = get();
       if (!bookId || !book) return;
       const target = Math.max(0, Math.min(spine, book.spineLength - 1));
       set({ chapterLoading: true });
       try {
         const c = await loadChapter(bookId, target);
+        if (epoch !== chapterEpoch || get().bookId !== bookId) return;
         const progress: Progress = {
           version: 1,
           spine: target,
@@ -290,12 +304,12 @@ export const useReaderStore = create<ReaderState>((set, get) => {
           chapter: { spine: target, html: c.html, href: c.href, paras: c.paras },
           chapterLoading: false,
           pendingScrollPara: para,
-          progress,
+          progress: get().returnPoint ?? progress,
           hints: null,
           hintRender: null,
           hintsError: null,
         });
-        scheduleProgressWrite(bookId, progress);
+        if (!get().returnPoint) scheduleProgressWrite(bookId, progress);
         void get().generateChapterNote(false);
         void loadChapterHints();
       } catch (e) {
@@ -304,13 +318,24 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       }
     },
 
+    async jumpTo(spine, para) {
+      if (!get().returnPoint) set({ returnPoint: get().progress });
+      if (get().chapter?.spine === spine) set({ pendingScrollPara: para });
+      else await get().openSpine(spine, para);
+    },
+    async returnToReading() {
+      const point = get().returnPoint; if (!point) return;
+      set({ focus: null });
+      await get().jumpTo(point.spine, point.anchor.para);
+      set({ progress: point, returnPoint: null, focus: null });
+    },
     clearPendingScroll() {
       set({ pendingScrollPara: null });
     },
 
     reportPosition(para) {
       const { bookId, book, chapter, progress } = get();
-      if (!bookId || !book || !chapter) return;
+      if (!bookId || !book || !chapter || get().returnPoint) return;
       if (progress.anchor.para === para && progress.spine === chapter.spine) return;
       const next: Progress = {
         version: 1,
@@ -323,42 +348,13 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       scheduleProgressWrite(bookId, next);
     },
 
-    async deepDive(anchor) {
-      const { bookId, book, chapter } = get();
-      if (!bookId || !book || !chapter) return;
-      const settings = useSettingsStore.getState().settings;
-      const prompts = useSettingsStore.getState().prompts;
-      const anno: Annotation = {
-        id: genId("a"),
-        kind: "passage",
-        spine: chapter.spine,
-        anchor,
-        content: "",
-        createdAt: nowIso(),
-      };
-      // 防剧透边界：选中处（SPEC §4.3）
-      const win = await beforeWindow(
-        bookId,
-        { spine: chapter.spine, para: anchor.para, offset: anchor.start },
-        settings.contextChars
-      );
-      const req = buildPassageRequest({
-        book,
-        chapterLabel: chapterLabelFor(book, chapter.spine),
-        beforeWindow: win,
-        quote: anchor.quote,
-        promptSet: effectivePromptSet(prompts, book.contentType),
-      });
-      await runAnnotation(anno, req);
-    },
-
     async generateChapterNote(force = false) {
       const { bookId, book, chapter, annotations } = get();
       if (!bookId || !book || !chapter) return;
       const settings = useSettingsStore.getState().settings;
       const prompts = useSettingsStore.getState().prompts;
       if (!force && !settings.autoChapterNote) return;
-      if (!resolveAiConfig(settings)) return; // 未配 AI 时静默跳过自动生成
+      if (!resolveAiConfig(settings)) { if (force) toast("error", "请先在设置中配置 AI"); return; }
       const spine = chapter.spine;
       const has = annotations.some((a) => a.kind === "chapter" && a.spine === spine);
       if (has && !force) return;
@@ -366,11 +362,6 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       if (noteInflight.has(key)) return;
       noteInflight.add(key);
       try {
-        if (has && force) {
-          // 重新生成：JSON 中移除旧导读（md 保留历史，SPEC §7-6）
-          set((s) => ({ annotations: s.annotations.filter((a) => !(a.kind === "chapter" && a.spine === spine)) }));
-          await saveAnnotations();
-        }
         const anno: Annotation = {
           id: genId("c"),
           kind: "chapter",
@@ -381,7 +372,7 @@ export const useReaderStore = create<ReaderState>((set, get) => {
         };
         const [win, full] = await Promise.all([
           beforeWindow(bookId, { spine, para: null }, settings.contextChars),
-          chapterFullText(bookId, spine, settings.chapterNoteMaxChars),
+          chapterFullText(bookId, spine, Number.POSITIVE_INFINITY),
         ]);
         const req = buildChapterNoteRequest({
           book,
@@ -392,7 +383,9 @@ export const useReaderStore = create<ReaderState>((set, get) => {
           truncated: full.truncated,
           promptSet: effectivePromptSet(prompts, book.contentType),
         });
-        await runAnnotation(anno, req);
+        if (get().bookId === bookId) await runAnnotation(anno, req);
+      } catch (e) {
+        toast("error", `章节导读失败：${friendlyAiError(e)}`);
       } finally {
         noteInflight.delete(key);
       }
@@ -499,7 +492,7 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       set({ hintRender: report });
     },
 
-    async addManualAnnotation(anchor, text) {
+    async addManualAnnotation(anchor, text, topics = []) {
       const { book, chapter } = get();
       const content = text.trim();
       if (!book || !chapter || !content) return;
@@ -510,12 +503,17 @@ export const useReaderStore = create<ReaderState>((set, get) => {
         anchor,
         content,
         source: "user",
+        topics,
         createdAt: nowIso(),
       };
       set((s) => ({ annotations: [...s.annotations, anno] }));
-      await saveAnnotations();
-      await appendAnnotationMd(book, anno);
-      toast("success", "已保存批注");
+      try { await saveAnnotations(); }
+      catch (e) { set(s => ({ annotations: s.annotations.filter(a => a.id !== anno.id) })); throw e; }
+      recordTopicUse(topics);
+      try { await appendAnnotationMd(book, anno); }
+      catch (e) { toast("error", `想法已保存，Markdown 追加失败：${friendlyAiError(e)}`); }
+      if (get().bookId === book.id) get().setFocus(anno.id, "text");
+      toast("success", "已保存想法");
     },
 
     async editAnnotation(id, content) {
@@ -527,7 +525,7 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       set((s) => ({ annotations: s.annotations.map((a) => (a.id === id ? next : a)) }));
       await saveAnnotations();
       try {
-        await updateAnnotationMd(book, next);
+        await appendAnnotationMd(book, next);
       } catch (e) {
         console.warn("阅读注释.md 同步失败（应用内已保存）", e);
       }
@@ -587,6 +585,33 @@ export const useReaderStore = create<ReaderState>((set, get) => {
         focus: s.focus?.id === id ? null : s.focus,
       }));
       await saveAnnotations();
+    },
+
+    async mergeExcerpts(ids) {
+      const { book, bookId, excerpts } = get();
+      if (!book || !bookId) return false;
+      const selected = ids.map(id => excerpts.find(e => e.id === id)).filter((e): e is Excerpt => !!e);
+      if (new Set(ids).size < 2 || selected.length !== ids.length) return false;
+      const segments = selected.flatMap(e => e.segments ?? [{ spine: e.spine, anchor: e.anchor, quote: e.quote, note: e.note }]);
+      segments.sort((a, b) => (a.spine < 0 ? Infinity : a.spine) - (b.spine < 0 ? Infinity : b.spine) || (a.anchor?.para ?? 0) - (b.anchor?.para ?? 0) || (a.anchor?.start ?? 0) - (b.anchor?.start ?? 0));
+      const merged: Excerpt = {
+        ...selected[0], id: genId("ex"), createdAt: nowIso(), segments,
+        spine: segments[0].spine, anchor: segments[0].anchor,
+        quote: segments.map(s => s.quote).join("\n\n"),
+        note: segments.map(s => s.note).filter(Boolean).join("\n\n") || undefined,
+        tags: [...new Set(selected.flatMap(e => e.tags ?? []))],
+      };
+      const chosen = new Set(ids);
+      const next = excerpts.flatMap(e => e.id === selected[0].id ? [merged] : chosen.has(e.id) ? [] : [e]);
+      set({ excerpts: next });
+      try { await storage().writeStateJson(paths.excerpts(bookId), { version: 1, items: next }); }
+      catch (e) {
+        if (get().excerpts === next) set({ excerpts });
+        toast("error", `合并保存失败：${String(e)}`); return false;
+      }
+      try { await appendExcerptMd(book, merged); }
+      catch (e) { toast("error", `合并已保存，Markdown 追加失败：${String(e)}`); }
+      return true;
     },
 
     async removeExcerpt(id) {

@@ -2,12 +2,13 @@ import { useUiStore, type PanelTab } from "../../stores/uiStore";
 import { useReaderStore } from "../../stores/readerStore";
 import { useChatStore } from "../../stores/chatStore";
 import { AnnotationsTab } from "./AnnotationsTab";
-import { ChatTab } from "./ChatTab";
+import { IdeasTab } from "./IdeasTab";
+import { useFootnoteStore } from "../../stores/footnoteStore";
 import { ExcerptsTab } from "./ExcerptsTab";
 
 const TABS: { id: PanelTab; label: string }[] = [
   { id: "annos", label: "注释" },
-  { id: "chat", label: "对话" },
+  { id: "chat", label: "想法" },
   { id: "excerpts", label: "摘录" },
 ];
 
@@ -17,13 +18,12 @@ export function SidePanel() {
   const chapter = useReaderStore((s) => s.chapter);
   const annotations = useReaderStore((s) => s.annotations);
   const excerpts = useReaderStore((s) => s.excerpts);
-  const hints = useReaderStore((s) => s.hints);
+  const footnotes = useFootnoteStore(s => s.items);
   const sessions = useChatStore((s) => s.sessions);
 
-  const hintCount = hints && hints.metadata.spine === chapter?.spine ? hints.hints.length : 0;
   const counts: Record<PanelTab, number> = {
-    annos: annotations.filter((a) => a.spine === chapter?.spine).length + hintCount,
-    chat: sessions.length,
+    annos: footnotes.length + annotations.filter(a => a.kind === "chapter" && a.spine === chapter?.spine).length,
+    chat: sessions.length + annotations.filter(a => a.kind === "passage" && a.source === "user").length,
     excerpts: excerpts.length,
   };
 
@@ -47,7 +47,7 @@ export function SidePanel() {
       </div>
       <div className="min-h-0 flex-1">
         {tab === "annos" && <AnnotationsTab />}
-        {tab === "chat" && <ChatTab />}
+        {tab === "chat" && <IdeasTab />}
         {tab === "excerpts" && <ExcerptsTab />}
       </div>
     </aside>

@@ -1,3 +1,4 @@
+import { ideaTopics, topicLine } from "../../lib/topics";
 import type { Annotation, BookMeta, ChatSession, ChatTurn, Excerpt, HintsFile } from "../../types/models";
 import { storage } from "../storage";
 import { paths } from "../storage/paths";
@@ -40,7 +41,7 @@ export async function appendAnnotationMd(book: BookMeta, anno: Annotation): Prom
     anno.kind === "chapter"
       ? `## ${label} · 章节导读`
       : anno.source === "user"
-        ? `## ${label} · 我的批注${quotePart}`
+        ? `## ${label} · 想法${quotePart}`
         : `## ${label}${quotePart}`;
   const meta = metaComment("ai-anno", {
     id: anno.id,
@@ -52,8 +53,12 @@ export async function appendAnnotationMd(book: BookMeta, anno: Annotation): Prom
   });
   const parts = ["---", "", heading, meta, ""];
   if (anno.kind === "passage" && anno.anchor) parts.push(quoteBlock(anno.anchor.quote), "");
+  if (ideaTopics(anno).length) parts.push(topicLine(ideaTopics(anno)));
   parts.push(anno.content.trim());
-  await storage().appendMarkdown(paths.productNotes(book.productDir), parts.join("\n"), frontmatter(book, "阅读注释"));
+  for (const entry of anno.entries ?? []) {
+    parts.push("", `### 追加想法 · ${entry.createdAt}`, "", entry.content.trim());
+  }
+  await storage().appendMarkdown(anno.source === "user" && anno.kind === "passage" ? paths.productIdeas(book.productDir) : paths.productNotes(book.productDir), parts.join("\n"), frontmatter(book, anno.source === "user" ? "想法" : "阅读注释"));
 }
 
 /**
@@ -185,9 +190,11 @@ export async function appendChatTurnsMd(
   const parts: string[] = [];
   if (header === "new") parts.push(sessionHeader(book, session));
   if (header === "resume") parts.push(resumeHeader(session));
+  parts.push(`<!-- idea ${session.id} -->`);
+  if (ideaTopics(session).length) parts.push(topicLine(ideaTopics(session)));
   for (const t of turns) parts.push(turnBlock(t));
   await storage().appendMarkdown(
-    paths.productChats(book.productDir),
+    paths.productIdeas(book.productDir),
     parts.join("\n\n"),
     frontmatter(book, "阅读对话")
   );

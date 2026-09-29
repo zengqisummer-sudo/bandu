@@ -20,6 +20,7 @@ export interface ReadingPrefs {
 }
 
 export interface Settings {
+  bookSearch?: { protocol: "responses" | "anthropic"; baseUrl: string; model: string };
   version: 1;
   ai: AiSettings;
   contextChars: number;
@@ -33,6 +34,7 @@ export interface Settings {
 }
 
 export interface PromptSet {
+  footnote?: string;
   chapter: string;
   passage: string;
   chat: string;
@@ -86,7 +88,17 @@ export interface Anchor {
   suffix: string;
 }
 
+export interface IdeaEntry {
+  id: string;
+  content: string;
+  createdAt: string;
+}
+
 export interface Annotation {
+  entries?: IdeaEntry[];
+  topics?: string[];
+  /** Legacy idea topics, read only as a compatibility fallback. */
+  tags?: string[];
   id: string;
   kind: "chapter" | "passage";
   spine: number;
@@ -109,6 +121,10 @@ export interface ChatTurn {
 }
 
 export interface ChatSession {
+  entries?: IdeaEntry[];
+  topics?: string[];
+  anchor?: Anchor;
+  tags?: string[];
   id: string;
   title: string;
   createdAt: string;
@@ -126,6 +142,8 @@ export interface ConversationsFile {
 export type ExcerptSource = "manual" | "kindle" | "text";
 
 export interface Excerpt {
+  /** 合并摘录保留各段的独立原文与锚点。 */
+  segments?: { spine: number; anchor: Anchor | null; quote: string; note?: string }[];
   id: string;
   spine: number; // 未定位为 -1
   anchor: Anchor | null;
@@ -195,4 +213,18 @@ export interface HintsFile {
   version: 1;
   metadata: HintsMetadata;
   hints: Hint[];
+}
+
+export interface Footnote {
+  id: string;
+  spine: number;
+  target: HintTarget;
+  text: string;
+  sync: boolean;
+  createdAt: string;
+}
+export interface FootnotesFile {
+  version: 1;
+  items: Footnote[];
+  bookGuide?: string;
 }

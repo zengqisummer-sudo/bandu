@@ -8,6 +8,7 @@ export const paths = {
   cover: (id: string, file: string) => `books/${id}/${file}`,
   progress: (id: string) => `books/${id}/progress.json`,
   annotations: (id: string) => `books/${id}/annotations.json`,
+  footnotes: (id: string) => `books/${id}/footnotes.json`,
   conversations: (id: string) => `books/${id}/conversations.json`,
   excerpts: (id: string) => `books/${id}/excerpts.json`,
   bookDir: (id: string) => `books/${id}`,
@@ -19,5 +20,6 @@ export const paths = {
   // 产物区（相对产物根）
   productNotes: (dir: string) => `${dir}/注释.md`,
   productChats: (dir: string) => `${dir}/对话.md`,
+  productIdeas: (dir: string) => `${dir}/想法.md`,
   productExcerpts: (dir: string) => `${dir}/摘录.md`,
 };

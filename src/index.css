@@ -25,6 +25,8 @@
   --line: #e6e1d5;
   --accent: #7a5c2e;
   --accent-soft: #f0e9db;
+  --topic-bg: #d6f9fb;
+  --topic-ink: #29494d;
 }
 
 [data-theme="dark"] {
@@ -36,6 +38,8 @@
   --line: #3a362f;
   --accent: #c9a86a;
   --accent-soft: #3a332a;
+  --topic-bg: #28474d;
+  --topic-ink: #c9edf0;
 }
 
 html,
@@ -99,10 +103,8 @@ body {
   display: block;
   height: 0.6em;
 }
-/* 拆行后的段落取消首行缩进（每个拆出的行都会缩进，观感杂乱） */
-.chapter-content p:has(.fr-gap),
-.chapter-content div[data-para]:has(.fr-gap),
-.chapter-content blockquote:has(.fr-gap) {
+/* 友好排版中的正文段统一取消首行缩进，包含未拆行的短段。 */
+.chapter-content [data-para].fr-paragraph {
   text-indent: 0;
 }
 /* 原书分段标示线：居中短虚线，只出现在发生过拆行的段落边界 */
@@ -115,7 +117,7 @@ body {
 
 /* 注释/摘录高亮（CSS Custom Highlight API） */
 ::highlight(anno) {
-  text-decoration: underline dotted 1.5px var(--accent);
+  background-color: color-mix(in srgb, var(--accent) 20%, transparent);
   text-underline-offset: 5px;
 }
 ::highlight(anno-active) {
@@ -255,3 +257,54 @@ body {
   scrollbar-width: thin;
   scrollbar-color: var(--line) transparent;
 }
+
+.chapter-content mark.hint-mark { background: transparent; color: inherit; cursor: pointer; }
+
+/* 想法卡：章节、独立话题索引、菜单与创建时间。索引颜色不改变卡片正文背景。 */
+.idea-card-group { position: relative; margin-bottom: 1.25rem; }
+.idea-menu-open { z-index: 20; }
+.idea-card {
+  position: relative;
+  isolation: isolate;
+  border: 1px solid var(--line);
+  border-radius: 1.25rem;
+  background: var(--card);
+  padding: 1rem;
+  overflow-wrap: anywhere;
+}
+.idea-card-focused { border-color: var(--accent); }
+.idea-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.idea-card-stacked { margin-bottom: 1.75rem; }
+.idea-card-stacked::before, .idea-card-stacked::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  z-index: -1;
+  height: 1.25rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 0 0 1rem 1rem;
+}
+.idea-card-stacked::before { left: 0.625rem; right: 0.625rem; bottom: -0.625rem; }
+.idea-card-stacked::after { left: 0.3125rem; right: 0.3125rem; bottom: -0.3125rem; }
+.idea-topic-index {
+  width: fit-content;
+  max-width: calc(100% + 1.75rem);
+  margin-left: -1.75rem;
+  padding: 0.625rem 1rem 0.625rem 1.75rem;
+  background: var(--topic-bg);
+  color: var(--topic-ink);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+.idea-menu-item { display: block; width: 100%; padding: 0.4rem 0.9rem; text-align: left; font-size: 0.8125rem; color: var(--ink); }
+.idea-menu-item:hover, .idea-menu-item:focus-visible { background: var(--accent-soft); outline: none; }
+.idea-menu-item:disabled { opacity: 0.4; cursor: default; }
+.idea-linked-cards { margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--line); }
+.idea-icon-button { display: inline-flex; align-items: center; justify-content: center; width: 1.75rem; height: 1.75rem; border-radius: 0.375rem; color: var(--ink-soft); }
+.idea-icon-button:hover { color: var(--ink); background: var(--accent-soft); }
+.idea-icon-button:focus-visible { outline: 2px solid var(--accent); }
+.idea-icon-button:disabled { opacity: 0.4; cursor: default; }
+.idea-stack-toggle { position: absolute; z-index: 1; left: 0; right: 0; bottom: -0.75rem; height: 1.25rem; border-radius: 0 0 1rem 1rem; cursor: pointer; }
+.idea-stack-toggle:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.idea-stack-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

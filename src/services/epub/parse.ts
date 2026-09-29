@@ -24,7 +24,7 @@ export function closeEpub(id: string) {
   instances.delete(id);
 }
 
-const SANITIZE_OPTS = {
+export const SANITIZE_OPTS = {
   // 去掉样式与交互类标签，排版由应用统一控制
   FORBID_TAGS: ["style", "link", "script", "meta", "title", "head", "base", "form", "input", "button", "iframe", "object", "embed", "video", "audio", "nav"],
   FORBID_ATTR: ["style", "class", "id"],
